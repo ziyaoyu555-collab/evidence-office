@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-08-09
+
+- add `init` to create a ready-to-use review workspace;
+- add `intake` to register existing source files without destroying claims;
+- add a portable Markdown evidence map and standalone source index to every build;
+- add a CLI integration test for the complete init → intake → build flow.
+
 ## 0.2.0 — 2026-08-09
 
 - add a claim ledger to JSON, text, and HTML reports;

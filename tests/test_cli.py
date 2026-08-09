@@ -17,7 +17,7 @@ class CliBehaviourTests(unittest.TestCase):
                 main(["--version"])
 
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("evidence-office 0.2.0", stdout.getvalue())
+        self.assertIn("evidence-office 0.3.0", stdout.getvalue())
 
     def test_build_writes_machine_and_human_reports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -45,6 +45,29 @@ class CliBehaviourTests(unittest.TestCase):
             self.assertTrue((out_dir / "evidence-report.html").is_file())
             report = json.loads((out_dir / "evidence-report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["status"], "passed")
+
+    def test_cli_runs_init_intake_and_build_as_one_real_workflow(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "package"
+            self.assertEqual(main(["init", "--out", str(workspace), "--project", "CLI workflow"]), 0)
+            source = workspace / "sources" / "results.csv"
+            source.write_text("metric,value\nefficiency,0.91\n", encoding="utf-8")
+            manifest_path = workspace / "manifest.json"
+            self.assertEqual(main(["intake", str(manifest_path), "--root", str(workspace), "sources/results.csv"]), 0)
+            self.assertEqual(main([
+                "claim", "add", str(manifest_path),
+                "--id", "C-001",
+                "--statement", "Efficiency is 0.91.",
+                "--status", "verified",
+                "--source", "sources/results.csv",
+                "--anchor", "row:1/field:value",
+                "--root", str(workspace),
+            ]), 0)
+
+            out_dir = workspace / "dist"
+            self.assertEqual(main(["build", str(manifest_path), "--out", str(out_dir)]), 0)
+            self.assertIn("C-001", (out_dir / "evidence-map.md").read_text(encoding="utf-8"))
+            self.assertTrue((out_dir / "source-index.json").is_file())
 
     def test_demo_is_explicitly_synthetic_and_validates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

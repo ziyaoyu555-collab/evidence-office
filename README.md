@@ -46,6 +46,48 @@ Run the test suite without third-party test dependencies:
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
+## Real project workflow
+
+For a real engineering or research package, use the built-in lifecycle instead of starting from a hand-written folder:
+
+```bash
+evidence-office init \
+  --out ./energy-review \
+  --project "Energy control review" \
+  --description "Evidence package for a course or engineering review"
+
+# Put source files in energy-review/sources/ or another path below the workspace.
+evidence-office intake \
+  ./energy-review/manifest.json \
+  --root ./energy-review \
+  sources/results.csv sources/report.docx sources/deck.pptx
+
+# Add a verified claim without manually editing JSON.
+evidence-office claim add \
+  ./energy-review/manifest.json \
+  --root ./energy-review \
+  --id C-001 \
+  --statement "Efficiency is 0.91." \
+  --status verified \
+  --source sources/results.csv \
+  --anchor row:1/field:value
+
+# Check the manifest.
+evidence-office validate ./energy-review/manifest.json
+
+# Produce the review packet.
+evidence-office build \
+  ./energy-review/manifest.json \
+  --out ./energy-review/dist
+```
+
+The build creates four useful outputs:
+
+- `evidence-report.json` for CI or downstream tools;
+- `evidence-report.html` for a human review page;
+- `evidence-map.md` for a portable Markdown review packet;
+- `source-index.json` for source fingerprints and available anchors.
+
 ## Manifest format
 
 ```json

@@ -11,6 +11,7 @@ from .demo import create_demo
 from .report import render_html, render_json, render_text, write_package
 from .source_index import index_file
 from .validator import load_manifest, validate_manifest
+from .workflow import add_claim, create_workspace, intake_sources
 
 
 def _root_for(manifest_path: Path, explicit: Path | None) -> Path:
@@ -68,6 +69,37 @@ def _inspect_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _init_command(args: argparse.Namespace) -> int:
+    manifest_path = create_workspace(args.out, args.project, args.description)
+    print(manifest_path)
+    return 0
+
+
+def _intake_command(args: argparse.Namespace) -> int:
+    manifest_path = args.manifest.resolve()
+    root = (args.root or manifest_path.parent).resolve()
+    added = intake_sources(manifest_path, root, args.source_paths)
+    print(f"Registered sources: {added}")
+    return 0
+
+
+def _claim_add_command(args: argparse.Namespace) -> int:
+    manifest_path = args.manifest.resolve()
+    root = (args.root or manifest_path.parent).resolve()
+    add_claim(
+        manifest_path,
+        root,
+        claim_id=args.id,
+        statement=args.statement,
+        status=args.status,
+        source_path=args.source,
+        anchor=args.anchor,
+        note=args.note,
+    )
+    print(f"Added claim: {args.id}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="evidence-office", description="Validate evidence-linked engineering deliverables.")
     parser.add_argument("--version", action="version", version=f"evidence-office {__version__}")
@@ -94,6 +126,31 @@ def build_parser() -> argparse.ArgumentParser:
     demo = subparsers.add_parser("demo", help="Create a synthetic, self-contained example project.")
     demo.add_argument("--out", type=Path, required=True)
     demo.set_defaults(handler=lambda args: (print(create_demo(args.out.resolve())), 0)[1])
+
+    init = subparsers.add_parser("init", help="Create a new evidence review workspace.")
+    init.add_argument("--out", type=Path, required=True)
+    init.add_argument("--project", required=True)
+    init.add_argument("--description", default="")
+    init.set_defaults(handler=_init_command)
+
+    intake = subparsers.add_parser("intake", help="Register existing source files in a manifest.")
+    intake.add_argument("manifest", type=Path)
+    intake.add_argument("source_paths", nargs="+", help="Source paths relative to --root or absolute paths inside it.")
+    intake.add_argument("--root", type=Path)
+    intake.set_defaults(handler=_intake_command)
+
+    claim = subparsers.add_parser("claim", help="Manage claims in a manifest.")
+    claim_subparsers = claim.add_subparsers(dest="claim_command", required=True)
+    claim_add = claim_subparsers.add_parser("add", help="Add one claim with optional evidence.")
+    claim_add.add_argument("manifest", type=Path)
+    claim_add.add_argument("--id", required=True)
+    claim_add.add_argument("--statement", required=True)
+    claim_add.add_argument("--status", choices=("verified", "unverified", "assumption"), required=True)
+    claim_add.add_argument("--source")
+    claim_add.add_argument("--anchor")
+    claim_add.add_argument("--note")
+    claim_add.add_argument("--root", type=Path)
+    claim_add.set_defaults(handler=_claim_add_command)
     return parser
 
 
