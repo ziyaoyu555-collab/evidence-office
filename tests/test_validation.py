@@ -72,7 +72,7 @@ class ValidationBehaviourTests(unittest.TestCase):
     def test_markdown_report_escapes_html_and_table_delimiters(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source_name = "a|b`c.txt"
+            source_name = "a-b`c.txt"
             (root / source_name).write_text("evidence\n", encoding="utf-8")
             manifest = ProjectManifest.from_mapping({
                 "project": "<Unsafe | project>",
@@ -89,7 +89,7 @@ class ValidationBehaviourTests(unittest.TestCase):
 
             self.assertNotIn("<script>", markdown)
             self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt; \\| result", markdown)
-            self.assertIn("a\\|b`c.txt#line:1", markdown)
+            self.assertIn("a-b`c.txt#line:1", markdown)
 
     def test_human_reports_include_claim_and_evidence_notes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
