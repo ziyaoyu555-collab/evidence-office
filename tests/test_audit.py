@@ -1,0 +1,93 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from evidence_office.audit import audit_package
+from evidence_office.validator import load_manifest
+from evidence_office.workflow import create_workspace, intake_sources
+
+
+class AuditBehaviourTests(unittest.TestCase):
+    def _built_workspace(self, directory: str) -> tuple[Path, Path, Path]:
+        workspace = Path(directory) / "package"
+        manifest_path = create_workspace(workspace, "Audit review", "Drift audit")
+        source_path = workspace / "sources" / "results.csv"
+        source_path.write_text("metric,value\nefficiency,0.91\n", encoding="utf-8")
+        intake_sources(manifest_path, workspace, ["sources/results.csv"])
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+        raw["claims"] = [{
+            "id": "C-001",
+            "statement": "Efficiency is 0.91.",
+            "status": "verified",
+            "sources": [{"path": "sources/results.csv", "anchor": "row:1/field:value"}],
+        }]
+        manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+        manifest = load_manifest(manifest_path)
+        from evidence_office.report import write_package
+        from evidence_office.validator import validate_manifest
+        report = validate_manifest(manifest, workspace)
+        dist = workspace / "dist"
+        write_package(report, manifest, dist)
+        return workspace, manifest_path, dist
+
+    def test_unchanged_package_passes_drift_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "passed")
+            self.assertEqual(result.errors, ())
+            self.assertEqual(result.baseline_sources[0].sha256, result.current_sources[0].sha256)
+
+    def test_changed_source_fails_drift_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            (workspace / "sources" / "results.csv").write_text(
+                "metric,value\nefficiency,0.92\n", encoding="utf-8"
+            )
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("SOURCE_DRIFTED", {issue.code for issue in result.errors})
+
+    def test_invalid_baseline_fails_without_inventing_current_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            (dist / "source-index.json").write_text("{not-json", encoding="utf-8")
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("AUDIT_BASELINE_INVALID", {issue.code for issue in result.errors})
+            self.assertEqual(result.current_sources[0].path, "sources/results.csv")
+
+    def test_removed_source_is_reported_as_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            (workspace / "sources" / "results.csv").unlink()
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("SOURCE_MISSING_FROM_CURRENT", {issue.code for issue in result.errors})
+
+    def test_new_declared_source_requires_a_rebuild(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            extra = workspace / "sources" / "notes.txt"
+            extra.write_text("new source\n", encoding="utf-8")
+            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+            raw["sources"].append({"path": "sources/notes.txt"})
+            manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("SOURCE_NOT_IN_BASELINE", {issue.code for issue in result.errors})
+
+
+if __name__ == "__main__":
+    unittest.main()

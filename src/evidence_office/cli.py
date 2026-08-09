@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .audit import audit_package
 from .demo import create_demo
 from .report import render_html, render_json, render_text, write_package
 from .source_index import index_file
@@ -69,6 +70,20 @@ def _inspect_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _audit_command(args: argparse.Namespace) -> int:
+    manifest_path = args.manifest.resolve()
+    manifest = load_manifest(manifest_path)
+    report = audit_package(manifest, _root_for(manifest_path, args.root), args.package)
+    if args.format == "json":
+        content = render_json(report)
+    elif args.format == "html":
+        content = render_html(report)
+    else:
+        content = render_text(report)
+    _write_or_print(content, args.out)
+    return 1 if report.status == "failed" or (args.strict and report.warnings) else 0
+
+
 def _init_command(args: argparse.Namespace) -> int:
     manifest_path = create_workspace(args.out, args.project, args.description)
     print(manifest_path)
@@ -124,6 +139,15 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("path")
     inspect.add_argument("--root", type=Path, default=Path.cwd())
     inspect.set_defaults(handler=_inspect_command)
+
+    audit = subparsers.add_parser("audit", help="Check whether sources still match a built review package.")
+    audit.add_argument("manifest", type=Path)
+    audit.add_argument("--package", type=Path, required=True, help="Build directory containing source-index.json.")
+    audit.add_argument("--root", type=Path)
+    audit.add_argument("--format", choices=("text", "json", "html"), default="text")
+    audit.add_argument("--out", type=Path, help="Write the audit report to a file instead of stdout.")
+    audit.add_argument("--strict", action="store_true", help="Treat review warnings as a blocking exit code.")
+    audit.set_defaults(handler=_audit_command)
 
     demo = subparsers.add_parser("demo", help="Create a synthetic, self-contained example project.")
     demo.add_argument("--out", type=Path, required=True)

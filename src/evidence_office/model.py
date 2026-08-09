@@ -126,3 +126,30 @@ class ValidationReport:
     @property
     def warnings(self) -> tuple[Issue, ...]:
         return tuple(issue for issue in self.issues if issue.severity == "warning")
+
+
+@dataclass(frozen=True)
+class AuditReport:
+    """Result of comparing current sources with a previously built package."""
+
+    project: str
+    status: str
+    issues: tuple[Issue, ...]
+    current_sources: tuple[SourceSnapshot, ...]
+    baseline_sources: tuple[SourceSnapshot, ...]
+    claims: tuple[Claim, ...]
+    claims_checked: int
+
+    @property
+    def sources(self) -> tuple[SourceSnapshot, ...]:
+        """Expose current sources through the same report interface as validation."""
+
+        return self.current_sources
+
+    @property
+    def errors(self) -> tuple[Issue, ...]:
+        return tuple(issue for issue in self.issues if issue.severity == "error")
+
+    @property
+    def warnings(self) -> tuple[Issue, ...]:
+        return tuple(issue for issue in self.issues if issue.severity == "warning")

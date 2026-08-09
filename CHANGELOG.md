@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 — 2026-08-09
+
+- add `audit` to detect source files changed, removed, or added after a package was built;
+- validate the stored source-index baseline before comparing it with current files;
+- expose drift-audit reports in text, JSON, and HTML CLI formats;
+- run drift auditing in GitHub Actions after the synthetic package build;
+- expand the regression suite from 22 to 26 tests.
+
 ## 0.4.0 — 2026-08-09
 
 - fix `init` and `demo` crashes when the output path is an existing file;

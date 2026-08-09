@@ -157,6 +157,9 @@ evidence-office build manifest.json --out dist/
 # Strict build; still writes the report package, but fails on warnings.
 evidence-office build manifest.json --out dist/ --strict
 
+# Check that sources have not changed since the package was built.
+evidence-office audit manifest.json --package dist/
+
 # Inspect the anchors available in one source.
 evidence-office inspect results.csv --root .
 ```
@@ -166,6 +169,11 @@ Exit codes:
 - `0`: passed or passed with warnings;
 - `1`: validation completed and found blocking errors, or `--strict` found review warnings;
 - `2`: the command itself could not read or parse the requested input.
+
+`audit` returns exit code `1` when a source fingerprint differs from the
+package baseline, when a previously packaged source is missing, or when a new
+declared source was added after the build. It also preserves validation
+warnings; add `--strict` when those warnings must block delivery.
 
 ## Safety and honest limits
 
@@ -183,6 +191,8 @@ source_index.py  →  immutable fingerprints and anchors
 validator.py     →  blocking errors and visible warnings
         ↓
 report.py        →  JSON + standalone HTML
+        ↓
+audit.py         →  post-build source drift gate
         ↓
 CI / review / downstream Office compiler
 ```

@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .model import ProjectManifest, ValidationReport
+from .model import AuditReport, ProjectManifest, ValidationReport
 
 
 def report_to_dict(report: ValidationReport) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "schema_version": "0.3",
+        "report_type": "drift_audit" if isinstance(report, AuditReport) else "validation",
         "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "project": report.project,
         "status": report.status,
@@ -51,6 +52,20 @@ def report_to_dict(report: ValidationReport) -> dict[str, Any]:
             for source in report.sources
         ],
     }
+    if isinstance(report, AuditReport):
+        payload["audit"] = {
+            "baseline_sources": [
+                {
+                    "path": source.path,
+                    "kind": source.kind,
+                    "sha256": source.sha256,
+                    "size_bytes": source.size_bytes,
+                }
+                for source in report.baseline_sources
+            ],
+            "current_sources": len(report.current_sources),
+        }
+    return payload
 
 
 def render_json(report: ValidationReport) -> str:
@@ -65,6 +80,8 @@ def render_text(report: ValidationReport) -> str:
         f"Sources indexed: {len(report.sources)}",
         f"Errors: {len(report.errors)} | Warnings: {len(report.warnings)}",
     ]
+    if isinstance(report, AuditReport):
+        lines.append(f"Baseline sources: {len(report.baseline_sources)}")
     if report.issues:
         lines.append("Issues:")
         for issue in report.issues:

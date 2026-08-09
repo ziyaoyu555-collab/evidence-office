@@ -17,7 +17,7 @@ class CliBehaviourTests(unittest.TestCase):
                 main(["--version"])
 
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("evidence-office 0.4.0", stdout.getvalue())
+        self.assertIn("evidence-office 0.5.0", stdout.getvalue())
 
     def test_build_writes_machine_and_human_reports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -120,6 +120,29 @@ class CliBehaviourTests(unittest.TestCase):
             ])
 
             self.assertEqual(exit_code, 1)
+
+    def test_audit_command_detects_source_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "demo"
+            self.assertEqual(main(["demo", "--out", str(workspace)]), 0)
+            manifest = workspace / "manifest.json"
+            dist = workspace / "dist"
+            self.assertEqual(main(["build", str(manifest), "--out", str(dist)]), 0)
+            (workspace / "simulation_results.csv").write_text(
+                "run,tracking_error_m,energy_kwh\nsynthetic-01,0.18,2.41\nsynthetic-02,0.99,2.37\n",
+                encoding="utf-8",
+            )
+            audit_out = workspace / "audit.json"
+
+            exit_code = main([
+                "audit", str(manifest), "--package", str(dist),
+                "--format", "json", "--out", str(audit_out),
+            ])
+
+            self.assertEqual(exit_code, 1)
+            payload = json.loads(audit_out.read_text(encoding="utf-8"))
+            self.assertEqual(payload["report_type"], "drift_audit")
+            self.assertIn("SOURCE_DRIFTED", {issue["code"] for issue in payload["issues"]})
 
 
 if __name__ == "__main__":

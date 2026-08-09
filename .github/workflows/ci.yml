@@ -24,3 +24,7 @@ jobs:
         run: |
           python -m evidence_office demo --out /tmp/evidence-office-demo
           python -m evidence_office build /tmp/evidence-office-demo/manifest.json --out /tmp/evidence-office-demo/dist
+      - name: Audit built example for source drift
+        env:
+          PYTHONPATH: src
+        run: python -m evidence_office audit /tmp/evidence-office-demo/manifest.json --package /tmp/evidence-office-demo/dist
