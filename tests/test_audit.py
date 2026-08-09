@@ -2,8 +2,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from evidence_office.audit import audit_package
+from evidence_office.report import render_html
 from evidence_office.validator import load_manifest
 from evidence_office.workflow import create_workspace, intake_sources
 
@@ -40,6 +42,29 @@ class AuditBehaviourTests(unittest.TestCase):
             self.assertEqual(result.status, "passed")
             self.assertEqual(result.errors, ())
             self.assertEqual(result.baseline_sources[0].sha256, result.current_sources[0].sha256)
+            self.assertIn("<h1>Source drift audit</h1>", render_html(result))
+
+    def test_manifest_formatting_only_does_not_create_false_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_path.write_text(json.dumps(raw, sort_keys=True, indent=4), encoding="utf-8")
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "passed")
+
+    def test_legacy_baseline_path_alias_does_not_create_false_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            source_index = json.loads((dist / "source-index.json").read_text(encoding="utf-8"))
+            source_index["schema_version"] = "0.3"
+            source_index["sources"][0]["path"] = "./sources/../sources/results.csv"
+            (dist / "source-index.json").write_text(json.dumps(source_index), encoding="utf-8")
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "passed")
 
     def test_changed_source_fails_drift_audit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -64,6 +89,54 @@ class AuditBehaviourTests(unittest.TestCase):
             self.assertIn("AUDIT_BASELINE_INVALID", {issue.code for issue in result.errors})
             self.assertEqual(result.current_sources[0].path, "sources/results.csv")
 
+    def test_deeply_nested_baseline_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            (dist / "manifest.snapshot.json").write_text("[]", encoding="utf-8")
+            manifest = load_manifest(manifest_path)
+
+            with mock.patch("evidence_office.audit.json.loads", side_effect=RecursionError("too deep")):
+                result = audit_package(manifest, workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("AUDIT_BASELINE_INVALID", {issue.code for issue in result.errors})
+
+    def test_malformed_manifest_snapshot_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            snapshot = json.loads((dist / "manifest.snapshot.json").read_text(encoding="utf-8"))
+            snapshot["claims"].append(42)
+            (dist / "manifest.snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("AUDIT_BASELINE_INVALID", {issue.code for issue in result.errors})
+
+    def test_unknown_source_index_schema_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            source_index = json.loads((dist / "source-index.json").read_text(encoding="utf-8"))
+            source_index["schema_version"] = "999"
+            (dist / "source-index.json").write_text(json.dumps(source_index), encoding="utf-8")
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("AUDIT_BASELINE_INVALID", {issue.code for issue in result.errors})
+
+    def test_invalid_unicode_in_source_baseline_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            source_index = json.loads((dist / "source-index.json").read_text(encoding="utf-8"))
+            source_index["sources"][0]["path"] = "bad\ud800path"
+            (dist / "source-index.json").write_text(json.dumps(source_index), encoding="utf-8")
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("AUDIT_BASELINE_INVALID", {issue.code for issue in result.errors})
+
     def test_removed_source_is_reported_as_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace, manifest_path, dist = self._built_workspace(directory)
@@ -87,6 +160,18 @@ class AuditBehaviourTests(unittest.TestCase):
 
             self.assertEqual(result.status, "failed")
             self.assertIn("SOURCE_NOT_IN_BASELINE", {issue.code for issue in result.errors})
+
+    def test_manifest_change_invalidates_the_built_package(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+            raw["claims"][0]["statement"] = "Efficiency is now described as 0.92."
+            manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("MANIFEST_DRIFTED", {issue.code for issue in result.errors})
 
 
 if __name__ == "__main__":

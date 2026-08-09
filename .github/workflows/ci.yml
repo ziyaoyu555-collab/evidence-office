@@ -4,27 +4,34 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.14"]
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7.0.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Compile package
         run: python -m compileall -q src tests
+      - name: Build and install wheel
+        run: |
+          python -m pip wheel . --no-deps --wheel-dir /tmp/evidence-office-wheels
+          python -m pip install /tmp/evidence-office-wheels/evidence_office-*.whl
       - name: Run standard-library tests
-        env:
-          PYTHONPATH: src
         run: python -m unittest discover -s tests -v
       - name: Build synthetic example
-        env:
-          PYTHONPATH: src
         run: |
-          python -m evidence_office demo --out /tmp/evidence-office-demo
-          python -m evidence_office build /tmp/evidence-office-demo/manifest.json --out /tmp/evidence-office-demo/dist
+          evidence-office --version
+          evidence-office demo --out /tmp/evidence-office-demo
+          evidence-office build /tmp/evidence-office-demo/manifest.json --out /tmp/evidence-office-demo/dist
       - name: Audit built example for source drift
-        env:
-          PYTHONPATH: src
-        run: python -m evidence_office audit /tmp/evidence-office-demo/manifest.json --package /tmp/evidence-office-demo/dist
+        run: evidence-office audit /tmp/evidence-office-demo/manifest.json --package /tmp/evidence-office-demo/dist

@@ -5,6 +5,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from evidence_office.cli import main
 
@@ -17,7 +18,7 @@ class CliBehaviourTests(unittest.TestCase):
                 main(["--version"])
 
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("evidence-office 0.5.0", stdout.getvalue())
+        self.assertIn("evidence-office 0.6.0", stdout.getvalue())
 
     def test_build_writes_machine_and_human_reports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -83,6 +84,21 @@ class CliBehaviourTests(unittest.TestCase):
             self.assertEqual(report["status"], "passed_with_warnings")
             self.assertGreaterEqual(report["summary"]["warnings"], 1)
 
+    def test_demo_refuses_to_overwrite_a_nonempty_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            out_dir = Path(directory) / "existing"
+            out_dir.mkdir()
+            marker = out_dir / "keep.txt"
+            marker.write_text("user data", encoding="utf-8")
+            stderr = io.StringIO()
+
+            with contextlib.redirect_stderr(stderr):
+                exit_code = main(["demo", "--out", str(out_dir)])
+
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "user data")
+            self.assertFalse((out_dir / "manifest.json").exists())
+
     def test_malformed_manifest_returns_a_concise_cli_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manifest = Path(directory) / "broken.json"
@@ -93,6 +109,103 @@ class CliBehaviourTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 2)
             self.assertIn("error:", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_malformed_manifest_entries_are_not_silently_discarded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("evidence\n", encoding="utf-8")
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({
+                "project": "Malformed entries",
+                "sources": [{"path": "source.txt"}, 42],
+                "claims": [],
+            }), encoding="utf-8")
+            stderr = io.StringIO()
+
+            with contextlib.redirect_stderr(stderr):
+                exit_code = main(["validate", str(manifest)])
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("sources", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_unknown_manifest_fields_are_not_silently_discarded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("evidence\n", encoding="utf-8")
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({
+                "project": "Unknown field",
+                "project_meta": {"owner": "reviewer"},
+                "sources": [{"path": "source.txt"}],
+                "claims": [],
+            }), encoding="utf-8")
+            stderr = io.StringIO()
+
+            with contextlib.redirect_stderr(stderr):
+                exit_code = main(["validate", str(manifest)])
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("Unknown manifest field", stderr.getvalue())
+            self.assertIn("project_meta", stderr.getvalue())
+
+    def test_deeply_nested_manifest_returns_a_concise_cli_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "deep.json"
+            manifest.write_text("{}", encoding="utf-8")
+            stderr = io.StringIO()
+            with mock.patch("evidence_office.validator.json.load", side_effect=RecursionError("too deep")):
+                with contextlib.redirect_stderr(stderr):
+                    exit_code = main(["validate", str(manifest)])
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("too deeply nested", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_invalid_unicode_manifest_text_is_rejected_before_rendering(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("evidence\n", encoding="utf-8")
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({
+                "project": "Unicode",
+                "sources": [{"path": "source.txt"}],
+                "claims": [{
+                    "id": "C-001",
+                    "statement": "bad \ud800 text",
+                    "status": "verified",
+                    "sources": [{"path": "source.txt", "anchor": "line:1"}],
+                }],
+            }), encoding="utf-8")
+            stderr = io.StringIO()
+
+            with contextlib.redirect_stderr(stderr):
+                exit_code = main(["validate", str(manifest)])
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("valid Unicode", stderr.getvalue())
+
+    def test_generic_output_io_error_is_reported_without_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "source.txt").write_text("evidence\n", encoding="utf-8")
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({
+                "project": "I/O failure",
+                "sources": [{"path": "source.txt"}],
+                "claims": [],
+            }), encoding="utf-8")
+            stderr = io.StringIO()
+
+            with mock.patch("pathlib.Path.write_text", side_effect=OSError("disk unavailable")):
+                with contextlib.redirect_stderr(stderr):
+                    exit_code = main([
+                        "validate", str(manifest), "--format", "json", "--out", str(root / "report.json"),
+                    ])
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("disk unavailable", stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_existing_file_output_path_returns_a_concise_cli_error(self) -> None:
@@ -107,6 +220,32 @@ class CliBehaviourTests(unittest.TestCase):
             self.assertEqual(exit_code, 2)
             self.assertIn("error:", stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_init_rejects_a_blank_project_before_creating_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "blank"
+            stderr = io.StringIO()
+
+            with contextlib.redirect_stderr(stderr):
+                exit_code = main(["init", "--out", str(workspace), "--project", "   "])
+
+            self.assertEqual(exit_code, 2)
+            self.assertFalse(workspace.exists())
+            self.assertIn("must not be empty", stderr.getvalue())
+
+    def test_init_rejects_invalid_unicode_before_creating_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "invalid-unicode"
+            stderr = io.StringIO()
+
+            with contextlib.redirect_stderr(stderr):
+                exit_code = main([
+                    "init", "--out", str(workspace), "--project", "bad\ud800project",
+                ])
+
+            self.assertEqual(exit_code, 2)
+            self.assertFalse(workspace.exists())
+            self.assertIn("valid Unicode", stderr.getvalue())
 
     def test_strict_build_treats_review_warnings_as_blocking(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -128,7 +267,7 @@ class CliBehaviourTests(unittest.TestCase):
             manifest = workspace / "manifest.json"
             dist = workspace / "dist"
             self.assertEqual(main(["build", str(manifest), "--out", str(dist)]), 0)
-            (workspace / "simulation_results.csv").write_text(
+            (workspace / "sources" / "simulation_results.csv").write_text(
                 "run,tracking_error_m,energy_kwh\nsynthetic-01,0.18,2.41\nsynthetic-02,0.99,2.37\n",
                 encoding="utf-8",
             )

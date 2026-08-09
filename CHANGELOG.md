@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0 — 2026-08-09
+
+- refactor manifest serialization, report state, exit handling, and CLI rendering behind smaller shared interfaces;
+- audit both source fingerprints and the canonical manifest snapshot, while ignoring formatting-only JSON changes;
+- write the validated in-memory manifest into packages so a concurrent disk change cannot corrupt the accepted snapshot;
+- normalize equivalent current and legacy-baseline paths and fail closed on null fields, unknown fields, invalid Unicode, invalid paths, malformed manifest entries, unreadable or malformed declared sources, missing XLSX parts, and unsupported audit schemas;
+- preserve nonempty demo directories and reject blank projects before creating a workspace;
+- resolve PPTX anchors by actual presentation order, suppress nonexistent text anchors for blank slides, and expose claim/evidence notes in every human report;
+- harden Markdown/HTML escaping and return concise CLI errors for recursive JSON and generic filesystem failures;
+- test built wheels, installed console commands, and the full workflow on Python 3.10, 3.12, and 3.14;
+- expand the regression suite from 26 to 57 tests, plus a 3,000-case adversarial run and a 5,000-claim stress run.
+
 ## 0.5.0 — 2026-08-09
 
 - add `audit` to detect source files changed, removed, or added after a package was built;

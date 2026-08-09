@@ -17,8 +17,11 @@ from .source_index import index_manifest_sources
 
 
 def load_manifest(path: Path) -> ProjectManifest:
-    with path.open("r", encoding="utf-8") as handle:
-        raw = json.load(handle)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except RecursionError as exc:
+        raise ValueError("Manifest JSON is too deeply nested.") from exc
     if not isinstance(raw, dict):
         raise ValueError("Manifest root must be a JSON object")
     return ProjectManifest.from_mapping(raw, manifest_path=path)
@@ -27,7 +30,7 @@ def load_manifest(path: Path) -> ProjectManifest:
 def _path_is_safe(root: Path, relative_path: str) -> bool:
     try:
         (root / relative_path).resolve().relative_to(root.resolve())
-    except ValueError:
+    except (OSError, ValueError):
         return False
     return True
 
@@ -62,10 +65,23 @@ def validate_manifest(manifest: ProjectManifest, root: Path) -> ValidationReport
         if spec.path in seen_sources:
             issues.append(Issue("error", "SOURCE_DUPLICATE", f"Source is declared more than once: {spec.path}", path=spec.path))
         seen_sources.add(spec.path)
-        if not _path_is_safe(root, spec.path):
+        if "\x00" in spec.path:
+            issues.append(Issue("error", "SOURCE_PATH_INVALID", "Source path contains an invalid NUL character.", path=spec.path))
+        elif not _path_is_safe(root, spec.path):
             issues.append(Issue("error", "SOURCE_OUTSIDE_ROOT", f"Source escapes the selected root: {spec.path}", path=spec.path))
         elif spec.path not in by_path:
-            issues.append(Issue("error", "SOURCE_MISSING", f"Declared source does not exist: {spec.path}", path=spec.path))
+            try:
+                source_exists = (root / spec.path).is_file()
+            except OSError:
+                source_exists = True
+            code = "SOURCE_READ_UNAVAILABLE" if source_exists else "SOURCE_MISSING"
+            message = (
+                f"Declared source could not be read safely: {spec.path}"
+                if source_exists else f"Declared source does not exist: {spec.path}"
+            )
+            issues.append(Issue("error", code, message, path=spec.path))
+        elif by_path[spec.path].metadata.get("parse") == "unavailable":
+            issues.append(Issue("error", "SOURCE_PARSE_UNAVAILABLE", f"Source could not be indexed safely: {spec.path}", path=spec.path))
 
     seen_claims: set[str] = set()
     for claim in manifest.claims:
@@ -96,7 +112,6 @@ def validate_manifest(manifest: ProjectManifest, root: Path) -> ValidationReport
             if snapshot is None:
                 continue
             if snapshot.metadata.get("parse") == "unavailable":
-                _add_claim_issue(issues, "error", "SOURCE_PARSE_UNAVAILABLE", f"Source could not be indexed safely: {ref.path}", claim, path=ref.path, anchor=ref.anchor)
                 continue
             if claim.status == "verified" and not ref.anchor:
                 _add_claim_issue(issues, "error", "VERIFIED_EVIDENCE_ANCHOR_MISSING", "A verified evidence reference must include a precise anchor.", claim, path=ref.path)
@@ -105,10 +120,4 @@ def validate_manifest(manifest: ProjectManifest, root: Path) -> ValidationReport
             elif ref.anchor and ref.anchor not in snapshot.anchors:
                 _add_claim_issue(issues, "error", "EVIDENCE_ANCHOR_NOT_FOUND", f"Evidence anchor was not found in {ref.path}: {ref.anchor}", claim, path=ref.path, anchor=ref.anchor)
 
-    if any(issue.severity == "error" for issue in issues):
-        status = "failed"
-    elif any(issue.severity == "warning" for issue in issues):
-        status = "passed_with_warnings"
-    else:
-        status = "passed"
-    return ValidationReport(manifest.project, status, tuple(issues), snapshots, manifest.claims, len(manifest.claims))
+    return ValidationReport(manifest.project, tuple(issues), snapshots, manifest.claims)

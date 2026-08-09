@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
+from typing import Callable
 
 from . import __version__
 from .audit import audit_package
 from .demo import create_demo
+from .model import ValidationReport
 from .report import render_html, render_json, render_text, write_package
 from .source_index import index_file
 from .validator import load_manifest, validate_manifest
@@ -28,18 +31,29 @@ def _write_or_print(content: str, out: Path | None) -> None:
         print(content, end="")
 
 
+_REPORT_RENDERERS: dict[str, Callable[[ValidationReport], str]] = {
+    "text": render_text,
+    "json": render_json,
+    "html": render_html,
+}
+
+
+def _emit_report(report: ValidationReport, format_name: str, out: Path | None, strict: bool) -> int:
+    _write_or_print(_REPORT_RENDERERS[format_name](report), out)
+    return report.exit_code(strict)
+
+
+def _add_report_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--format", choices=tuple(_REPORT_RENDERERS), default="text")
+    parser.add_argument("--out", type=Path, help="Write the report to a file instead of stdout.")
+    parser.add_argument("--strict", action="store_true", help="Treat review warnings as a blocking exit code.")
+
+
 def _validate_command(args: argparse.Namespace) -> int:
     manifest_path = args.manifest.resolve()
     manifest = load_manifest(manifest_path)
     report = validate_manifest(manifest, _root_for(manifest_path, args.root))
-    if args.format == "json":
-        content = render_json(report)
-    elif args.format == "html":
-        content = render_html(report)
-    else:
-        content = render_text(report)
-    _write_or_print(content, args.out)
-    return 1 if report.status == "failed" or (args.strict and report.warnings) else 0
+    return _emit_report(report, args.format, args.out, args.strict)
 
 
 def _build_command(args: argparse.Namespace) -> int:
@@ -50,7 +64,7 @@ def _build_command(args: argparse.Namespace) -> int:
     print(f"JSON: {json_path}")
     print(f"HTML: {html_path}")
     print(f"Status: {report.status}")
-    return 1 if report.status == "failed" or (args.strict and report.warnings) else 0
+    return report.exit_code(args.strict)
 
 
 def _inspect_command(args: argparse.Namespace) -> int:
@@ -58,7 +72,6 @@ def _inspect_command(args: argparse.Namespace) -> int:
     if snapshot is None:
         print(f"Source does not exist: {args.path}", file=sys.stderr)
         return 1
-    import json
     print(json.dumps({
         "path": snapshot.path,
         "kind": snapshot.kind,
@@ -74,14 +87,7 @@ def _audit_command(args: argparse.Namespace) -> int:
     manifest_path = args.manifest.resolve()
     manifest = load_manifest(manifest_path)
     report = audit_package(manifest, _root_for(manifest_path, args.root), args.package)
-    if args.format == "json":
-        content = render_json(report)
-    elif args.format == "html":
-        content = render_html(report)
-    else:
-        content = render_text(report)
-    _write_or_print(content, args.out)
-    return 1 if report.status == "failed" or (args.strict and report.warnings) else 0
+    return _emit_report(report, args.format, args.out, args.strict)
 
 
 def _init_command(args: argparse.Namespace) -> int:
@@ -92,7 +98,7 @@ def _init_command(args: argparse.Namespace) -> int:
 
 def _intake_command(args: argparse.Namespace) -> int:
     manifest_path = args.manifest.resolve()
-    root = (args.root or manifest_path.parent).resolve()
+    root = _root_for(manifest_path, args.root)
     added = intake_sources(manifest_path, root, args.source_paths)
     print(f"Registered sources: {added}")
     return 0
@@ -100,7 +106,7 @@ def _intake_command(args: argparse.Namespace) -> int:
 
 def _claim_add_command(args: argparse.Namespace) -> int:
     manifest_path = args.manifest.resolve()
-    root = (args.root or manifest_path.parent).resolve()
+    root = _root_for(manifest_path, args.root)
     add_claim(
         manifest_path,
         root,
@@ -123,9 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="Validate a JSON manifest and print a report.")
     validate.add_argument("manifest", type=Path)
     validate.add_argument("--root", type=Path, help="Root directory containing declared sources; defaults to the manifest directory.")
-    validate.add_argument("--format", choices=("text", "json", "html"), default="text")
-    validate.add_argument("--out", type=Path, help="Write the report to a file instead of stdout.")
-    validate.add_argument("--strict", action="store_true", help="Treat review warnings as a blocking exit code.")
+    _add_report_options(validate)
     validate.set_defaults(handler=_validate_command)
 
     build = subparsers.add_parser("build", help="Validate and write a portable report package.")
@@ -144,9 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("manifest", type=Path)
     audit.add_argument("--package", type=Path, required=True, help="Build directory containing source-index.json.")
     audit.add_argument("--root", type=Path)
-    audit.add_argument("--format", choices=("text", "json", "html"), default="text")
-    audit.add_argument("--out", type=Path, help="Write the audit report to a file instead of stdout.")
-    audit.add_argument("--strict", action="store_true", help="Treat review warnings as a blocking exit code.")
+    _add_report_options(audit)
     audit.set_defaults(handler=_audit_command)
 
     demo = subparsers.add_parser("demo", help="Create a synthetic, self-contained example project.")
@@ -184,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return int(args.handler(args))
-    except (FileExistsError, FileNotFoundError, IsADirectoryError, NotADirectoryError, PermissionError, UnicodeError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

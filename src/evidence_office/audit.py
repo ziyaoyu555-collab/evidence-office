@@ -7,12 +7,23 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
-from .model import AuditReport, Issue, ProjectManifest, SourceSnapshot
-from .source_index import index_manifest_sources
+from .model import AuditReport, Issue, ProjectManifest, SCHEMA_VERSION, SourceSnapshot, SourceSpec
 from .validator import validate_manifest
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SUPPORTED_SOURCE_INDEX_SCHEMAS = frozenset({"0.3", SCHEMA_VERSION})
+
+
+def _baseline_error(path: Path, message: str) -> Issue:
+    return Issue("error", "AUDIT_BASELINE_INVALID", message, path=str(path))
+
+
+def _read_json(path: Path) -> tuple[Any | None, list[Issue]]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")), []
+    except (OSError, UnicodeError, RecursionError, json.JSONDecodeError) as exc:
+        return None, [_baseline_error(path, f"Could not read baseline: {exc}")]
 
 
 def _baseline_source(raw: Any) -> SourceSnapshot | None:
@@ -38,8 +49,12 @@ def _baseline_source(raw: Any) -> SourceSnapshot | None:
         or not isinstance(metadata, Mapping)
     ):
         return None
+    try:
+        normalized_path = SourceSpec.from_mapping({"path": path}).path
+    except ValueError:
+        return None
     return SourceSnapshot(
-        path=path.strip(),
+        path=normalized_path,
         kind=kind,
         sha256=sha256,
         size_bytes=size_bytes,
@@ -50,12 +65,13 @@ def _baseline_source(raw: Any) -> SourceSnapshot | None:
 
 def _load_baseline(package_dir: Path) -> tuple[tuple[SourceSnapshot, ...], list[Issue]]:
     path = package_dir / "source-index.json"
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, IsADirectoryError, NotADirectoryError, OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return (), [Issue("error", "AUDIT_BASELINE_INVALID", f"Could not read source index: {exc}", path=str(path))]
+    raw, read_issues = _read_json(path)
+    if read_issues:
+        return (), read_issues
     if not isinstance(raw, Mapping) or not isinstance(raw.get("sources"), list):
-        return (), [Issue("error", "AUDIT_BASELINE_INVALID", "Source index must contain a sources array.", path=str(path))]
+        return (), [_baseline_error(path, "Source index must contain a sources array.")]
+    if raw.get("schema_version") not in _SUPPORTED_SOURCE_INDEX_SCHEMAS:
+        return (), [_baseline_error(path, f"Unsupported source-index schema: {raw.get('schema_version')!r}.")]
 
     snapshots: list[SourceSnapshot] = []
     issues: list[Issue] = []
@@ -63,14 +79,27 @@ def _load_baseline(package_dir: Path) -> tuple[tuple[SourceSnapshot, ...], list[
     for index, item in enumerate(raw["sources"]):
         snapshot = _baseline_source(item)
         if snapshot is None:
-            issues.append(Issue("error", "AUDIT_BASELINE_INVALID", f"Invalid source entry at index {index}.", path=str(path)))
+            issues.append(_baseline_error(path, f"Invalid source entry at index {index}."))
             continue
         if snapshot.path in seen:
-            issues.append(Issue("error", "AUDIT_BASELINE_INVALID", f"Duplicate source entry: {snapshot.path}", path=str(path)))
+            issues.append(_baseline_error(path, f"Duplicate source entry: {snapshot.path}"))
             continue
         seen.add(snapshot.path)
         snapshots.append(snapshot)
     return tuple(snapshots), issues
+
+
+def _load_manifest_baseline(package_dir: Path) -> tuple[dict[str, object] | None, list[Issue]]:
+    path = package_dir / "manifest.snapshot.json"
+    raw, read_issues = _read_json(path)
+    if read_issues:
+        return None, read_issues
+    if not isinstance(raw, Mapping):
+        return None, [_baseline_error(path, "Manifest snapshot must be a JSON object.")]
+    try:
+        return ProjectManifest.from_mapping(raw).to_mapping(), []
+    except ValueError as exc:
+        return None, [_baseline_error(path, f"Invalid manifest snapshot: {exc}")]
 
 
 def _drift_issues(
@@ -110,21 +139,24 @@ def audit_package(manifest: ProjectManifest, root: Path, package_dir: Path) -> A
     root = root.resolve()
     package_dir = package_dir.resolve()
     validation = validate_manifest(manifest, root)
-    current = validation.sources
-    baseline, baseline_issues = _load_baseline(package_dir)
+    baseline, source_baseline_issues = _load_baseline(package_dir)
+    manifest_baseline, manifest_baseline_issues = _load_manifest_baseline(package_dir)
     issues = list(validation.issues)
-    issues.extend(baseline_issues)
-    if not baseline_issues:
-        issues.extend(_drift_issues(baseline, current))
-    status = "failed" if any(issue.severity == "error" for issue in issues) else (
-        "passed_with_warnings" if any(issue.severity == "warning" for issue in issues) else "passed"
-    )
+    issues.extend(source_baseline_issues)
+    issues.extend(manifest_baseline_issues)
+    if not source_baseline_issues:
+        issues.extend(_drift_issues(baseline, validation.sources))
+    if not manifest_baseline_issues and manifest_baseline != manifest.to_mapping():
+        issues.append(Issue(
+            "error",
+            "MANIFEST_DRIFTED",
+            "Manifest content changed since the package was built.",
+            path=str(manifest.manifest_path) if manifest.manifest_path else None,
+        ))
     return AuditReport(
         project=manifest.project,
-        status=status,
         issues=tuple(issues),
-        current_sources=current,
-        baseline_sources=baseline,
+        sources=validation.sources,
         claims=manifest.claims,
-        claims_checked=len(manifest.claims),
+        baseline_sources=baseline,
     )

@@ -8,7 +8,9 @@ It answers a question that ordinary AI document tools usually leave implicit:
 
 This project does not pretend to replace a domain expert. It creates a deterministic evidence manifest, indexes declared CSV/JSON/text/DOCX/XLSX/PPTX sources, checks claim-to-source links, and writes both a machine-readable JSON report and a standalone HTML report.
 
-The report includes a claim ledger, so a reviewer can read every statement and its exact evidence references without reopening the manifest.
+The report includes a claim ledger, so a reviewer can read every statement, its
+claim note, and its exact evidence references and reference notes without
+reopening the manifest.
 
 ## Why this exists
 
@@ -39,6 +41,8 @@ open /tmp/evidence-office-demo/dist/evidence-report.html
 ```
 
 The demo intentionally contains synthetic values. Its assumption is visible as a warning; it is not a real vehicle or MATLAB/Simulink result.
+For safety, `demo` and `init` refuse to overwrite a nonempty directory; choose a
+new output path when rerunning them.
 
 Run the test suite without third-party test dependencies:
 
@@ -81,12 +85,13 @@ evidence-office build \
   --out ./energy-review/dist
 ```
 
-The build creates four useful outputs:
+The build creates five useful outputs:
 
 - `evidence-report.json` for CI or downstream tools;
 - `evidence-report.html` for a human review page;
 - `evidence-map.md` for a portable Markdown review packet;
-- `source-index.json` for source fingerprints and available anchors.
+- `source-index.json` for source fingerprints and available anchors;
+- `manifest.snapshot.json` for the exact canonical manifest accepted by the build.
 
 ## Manifest format
 
@@ -123,6 +128,10 @@ Allowed claim statuses:
 - `unverified`: allowed, but always reported as a warning;
 - `assumption`: allowed, but always reported as a warning.
 
+The manifest schema is intentionally strict: array entries must be objects and
+unknown fields are rejected instead of being silently discarded during a
+workflow command.
+
 Common anchors:
 
 | Source | Anchor examples |
@@ -130,7 +139,7 @@ Common anchors:
 | CSV | `row:1`, `row:1/field:value` |
 | XLSX | `sheet:Results/cell:B2`, `sheet:Results/row:2` |
 | DOCX | `paragraph:3`, `table:1/row:2/cell:1` |
-| PPTX | `slide:4`, `slide:4/text` |
+| PPTX | `slide:4`, `slide:4/text` (presentation order, including after slide reordering) |
 | JSON | `key:metrics`, `item:2`, `json:/metrics/efficiency`, `json:/runs/0/id` |
 | Markdown/text | `line:12` |
 
@@ -157,7 +166,7 @@ evidence-office build manifest.json --out dist/
 # Strict build; still writes the report package, but fails on warnings.
 evidence-office build manifest.json --out dist/ --strict
 
-# Check that sources have not changed since the package was built.
+# Check that sources and manifest semantics have not changed since the package was built.
 evidence-office audit manifest.json --package dist/
 
 # Inspect the anchors available in one source.
@@ -171,9 +180,12 @@ Exit codes:
 - `2`: the command itself could not read or parse the requested input.
 
 `audit` returns exit code `1` when a source fingerprint differs from the
-package baseline, when a previously packaged source is missing, or when a new
-declared source was added after the build. It also preserves validation
-warnings; add `--strict` when those warnings must block delivery.
+package baseline, when a previously packaged source is missing, when a new
+declared source was added after the build, or when the manifest's canonical
+content changed. Formatting-only JSON changes do not create false drift. An
+audit failure is a delivery gate for a stale package, not a program crash. The
+command also preserves validation warnings; add `--strict` when those warnings
+must block delivery.
 
 ## Safety and honest limits
 
@@ -184,7 +196,11 @@ The current package does not execute MATLAB, Simulink, SolidWorks, PowerPoint, W
 ## Architecture
 
 ```text
-manifest.json + declared files
+manifest.json
+        ↓
+model.py         →  canonical manifest + derived report state
+        ↓
+declared files
         ↓
 source_index.py  →  immutable fingerprints and anchors
         ↓
@@ -197,7 +213,15 @@ audit.py         →  post-build source drift gate
 CI / review / downstream Office compiler
 ```
 
-The core deliberately has no LLM dependency. AI-assisted manifest authoring can be added later, but the evidence gate must remain deterministic and model-independent.
+The core deliberately has no LLM dependency. `ProjectManifest.to_mapping()` is
+the single serialization boundary, and report status/exit behavior is derived
+instead of stored in parallel fields. AI-assisted manifest authoring can be
+added later, but the evidence gate must remain deterministic and
+model-independent.
+
+GitHub Actions compiles, builds, installs, and tests the wheel on Python 3.10,
+3.12, and 3.14. It then runs the installed console command through a complete
+demo → build → audit workflow, so the CI path does not depend on `PYTHONPATH`.
 
 ## Roadmap
 

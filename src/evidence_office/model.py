@@ -2,12 +2,55 @@
 
 from __future__ import annotations
 
+import posixpath
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
 
 VALID_STATUSES = frozenset({"verified", "unverified", "assumption"})
+SCHEMA_VERSION = "0.6"
+
+
+def _text(value: Any) -> str:
+    """Return trimmed manifest text without coercing nulls or objects."""
+
+    if not isinstance(value, str):
+        return ""
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("Manifest text must contain valid Unicode.") from exc
+    return value.strip()
+
+
+def _optional_text(value: Any) -> str | None:
+    text = _text(value)
+    return text or None
+
+
+def _path_text(value: Any) -> str:
+    text = _text(value).replace("\\", "/")
+    return posixpath.normpath(text) if text else ""
+
+
+def _mapping_items(value: Any, field_name: str) -> tuple[Mapping[str, Any], ...]:
+    """Require JSON-object entries instead of silently discarding bad shapes."""
+
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(f"Manifest field '{field_name}' must be an array.")
+    if not all(isinstance(item, Mapping) for item in value):
+        raise ValueError(f"Every entry in manifest field '{field_name}' must be an object.")
+    return tuple(value)
+
+
+def _reject_unknown(raw: Mapping[str, Any], allowed: set[str], context: str) -> None:
+    unknown = sorted(str(key) for key in raw.keys() - allowed)
+    if unknown:
+        noun = "field" if len(unknown) == 1 else "fields"
+        raise ValueError(f"Unknown {context} {noun}: {', '.join(unknown)}.")
 
 
 @dataclass(frozen=True)
@@ -18,13 +61,11 @@ class EvidenceRef:
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "EvidenceRef":
-        path = str(raw.get("path", "")).strip()
-        anchor_raw = raw.get("anchor")
-        note_raw = raw.get("note")
+        _reject_unknown(raw, {"path", "anchor", "note"}, "evidence reference")
         return cls(
-            path=path,
-            anchor=(str(anchor_raw).strip() if anchor_raw is not None else None),
-            note=(str(note_raw).strip() if note_raw is not None else None),
+            path=_path_text(raw.get("path")),
+            anchor=_optional_text(raw.get("anchor")),
+            note=_optional_text(raw.get("note")),
         )
 
 
@@ -38,16 +79,14 @@ class Claim:
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "Claim":
-        sources_raw = raw.get("sources", [])
-        if not isinstance(sources_raw, list):
-            sources_raw = []
-        note_raw = raw.get("note")
+        _reject_unknown(raw, {"id", "statement", "status", "sources", "note"}, "claim")
+        sources_raw = _mapping_items(raw.get("sources"), "claim.sources")
         return cls(
-            id=str(raw.get("id", "")).strip(),
-            statement=str(raw.get("statement", "")).strip(),
-            status=str(raw.get("status", "")).strip().lower(),
-            sources=tuple(EvidenceRef.from_mapping(item) for item in sources_raw if isinstance(item, Mapping)),
-            note=(str(note_raw).strip() if note_raw is not None else None),
+            id=_text(raw.get("id")),
+            statement=_text(raw.get("statement")),
+            status=_text(raw.get("status")).lower(),
+            sources=tuple(EvidenceRef.from_mapping(item) for item in sources_raw),
+            note=_optional_text(raw.get("note")),
         )
 
 
@@ -58,10 +97,10 @@ class SourceSpec:
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "SourceSpec":
-        label_raw = raw.get("label")
+        _reject_unknown(raw, {"path", "label"}, "source")
         return cls(
-            path=str(raw.get("path", "")).strip(),
-            label=(str(label_raw).strip() if label_raw is not None else None),
+            path=_path_text(raw.get("path")),
+            label=_optional_text(raw.get("label")),
         )
 
 
@@ -75,19 +114,45 @@ class ProjectManifest:
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any], manifest_path: Path | None = None) -> "ProjectManifest":
-        sources_raw = raw.get("sources", [])
-        claims_raw = raw.get("claims", [])
-        if not isinstance(sources_raw, list):
-            sources_raw = []
-        if not isinstance(claims_raw, list):
-            claims_raw = []
+        _reject_unknown(raw, {"project", "description", "sources", "claims"}, "manifest")
+        sources_raw = _mapping_items(raw.get("sources"), "sources")
+        claims_raw = _mapping_items(raw.get("claims"), "claims")
         return cls(
-            project=str(raw.get("project", "")).strip(),
-            description=str(raw.get("description", "")).strip(),
-            sources=tuple(SourceSpec.from_mapping(item) for item in sources_raw if isinstance(item, Mapping)),
-            claims=tuple(Claim.from_mapping(item) for item in claims_raw if isinstance(item, Mapping)),
+            project=_text(raw.get("project")),
+            description=_text(raw.get("description")),
+            sources=tuple(SourceSpec.from_mapping(item) for item in sources_raw),
+            claims=tuple(Claim.from_mapping(item) for item in claims_raw),
             manifest_path=manifest_path,
         )
+
+    def to_mapping(self) -> dict[str, object]:
+        """Return the canonical, portable manifest representation."""
+
+        return {
+            "project": self.project,
+            "description": self.description,
+            "sources": [
+                {"path": source.path, **({"label": source.label} if source.label else {})}
+                for source in self.sources
+            ],
+            "claims": [
+                {
+                    "id": claim.id,
+                    "statement": claim.statement,
+                    "status": claim.status,
+                    **({"note": claim.note} if claim.note else {}),
+                    "sources": [
+                        {
+                            "path": ref.path,
+                            **({"anchor": ref.anchor} if ref.anchor else {}),
+                            **({"note": ref.note} if ref.note else {}),
+                        }
+                        for ref in claim.sources
+                    ],
+                }
+                for claim in self.claims
+            ],
+        }
 
 
 @dataclass(frozen=True)
@@ -113,11 +178,21 @@ class Issue:
 @dataclass(frozen=True)
 class ValidationReport:
     project: str
-    status: str
     issues: tuple[Issue, ...]
     sources: tuple[SourceSnapshot, ...]
     claims: tuple[Claim, ...]
-    claims_checked: int
+
+    @property
+    def status(self) -> str:
+        if self.errors:
+            return "failed"
+        if self.warnings:
+            return "passed_with_warnings"
+        return "passed"
+
+    @property
+    def claims_checked(self) -> int:
+        return len(self.claims)
 
     @property
     def errors(self) -> tuple[Issue, ...]:
@@ -126,30 +201,19 @@ class ValidationReport:
     @property
     def warnings(self) -> tuple[Issue, ...]:
         return tuple(issue for issue in self.issues if issue.severity == "warning")
+
+    def exit_code(self, strict: bool = False) -> int:
+        return 1 if self.errors or (strict and self.warnings) else 0
 
 
 @dataclass(frozen=True)
-class AuditReport:
+class AuditReport(ValidationReport):
     """Result of comparing current sources with a previously built package."""
 
-    project: str
-    status: str
-    issues: tuple[Issue, ...]
-    current_sources: tuple[SourceSnapshot, ...]
     baseline_sources: tuple[SourceSnapshot, ...]
-    claims: tuple[Claim, ...]
-    claims_checked: int
 
     @property
-    def sources(self) -> tuple[SourceSnapshot, ...]:
-        """Expose current sources through the same report interface as validation."""
+    def current_sources(self) -> tuple[SourceSnapshot, ...]:
+        """Keep the audit-specific name without duplicating stored state."""
 
-        return self.current_sources
-
-    @property
-    def errors(self) -> tuple[Issue, ...]:
-        return tuple(issue for issue in self.issues if issue.severity == "error")
-
-    @property
-    def warnings(self) -> tuple[Issue, ...]:
-        return tuple(issue for issue in self.issues if issue.severity == "warning")
+        return self.sources

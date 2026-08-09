@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import posixpath
 import re
 import zipfile
 from pathlib import Path
@@ -21,6 +22,8 @@ _NS = {
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
     "s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
 }
+_OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 
 
 def _sha256(path: Path) -> str:
@@ -39,8 +42,28 @@ def _zip_xml(path: Path, member: str) -> ElementTree.Element | None:
         return None
 
 
+def _relationship_targets(archive: zipfile.ZipFile, member: str) -> dict[str, str]:
+    root = ElementTree.fromstring(archive.read(member))
+    return {
+        relation.attrib.get("Id", ""): relation.attrib.get("Target", "")
+        for relation in root.findall(f"{{{_PACKAGE_REL_NS}}}Relationship")
+    }
+
+
+def _archive_target(base: str, target: str) -> str:
+    return posixpath.normpath(target.lstrip("/") if target.startswith("/") else posixpath.join(base, target))
+
+
 def _base_anchors(path: Path) -> set[str]:
     return {"file", f"file:{path.name}"}
+
+
+def _valid_unicode(text: str) -> bool:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _csv_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
@@ -76,8 +99,12 @@ def _json_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
     stack: list[tuple[str, object]] = [("", value)]
     while stack:
         pointer, current = stack.pop()
+        if isinstance(current, str) and not _valid_unicode(current):
+            return anchors, {"parse": "unavailable", "error": "JSON contains invalid Unicode."}
         if isinstance(current, dict):
             for key, child in current.items():
+                if not _valid_unicode(key):
+                    return anchors, {"parse": "unavailable", "error": "JSON contains invalid Unicode."}
                 escaped = str(key).replace("~", "~0").replace("/", "~1")
                 child_pointer = f"{pointer}/{escaped}"
                 anchors.add(f"json:{child_pointer}")
@@ -136,14 +163,28 @@ def _pptx_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
     try:
         with zipfile.ZipFile(path) as archive:
             members = archive.namelist()
-            slide_members = [member for member in members if re.fullmatch(r"ppt/slides/slide\d+\.xml", member)]
-            for member in slide_members:
-                slide_number = int(re.search(r"slide(\d+)\.xml", member).group(1))
+            if {"ppt/presentation.xml", "ppt/_rels/presentation.xml.rels"} <= set(members):
+                presentation = ElementTree.fromstring(archive.read("ppt/presentation.xml"))
+                targets = _relationship_targets(archive, "ppt/_rels/presentation.xml.rels")
+                ordered_slides = []
+                for slide_number, slide in enumerate(presentation.findall(".//p:sldIdLst/p:sldId", _NS), start=1):
+                    relation_id = slide.attrib.get(f"{{{_OFFICE_REL_NS}}}id", "")
+                    member = _archive_target("ppt", targets.get(relation_id, ""))
+                    if member not in members:
+                        raise KeyError(f"Missing slide relationship target: {relation_id}")
+                    ordered_slides.append((slide_number, member))
+            else:
+                ordered_slides = [
+                    (int(re.search(r"slide(\d+)\.xml", member).group(1)), member)
+                    for member in members if re.fullmatch(r"ppt/slides/slide\d+\.xml", member)
+                ]
+            for slide_number, member in ordered_slides:
                 slide_numbers.add(slide_number)
                 root = ElementTree.fromstring(archive.read(member))
                 text_count = len(root.findall(".//a:t", _NS))
                 anchors.add(f"slide:{slide_number}")
-                anchors.add(f"slide:{slide_number}/text")
+                if text_count:
+                    anchors.add(f"slide:{slide_number}/text")
                 anchors.add(f"slide:{slide_number}/text-count:{text_count}")
             image_count = len([member for member in members if member.startswith("ppt/media/")])
     except (KeyError, ElementTree.ParseError, OSError, RuntimeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile):
@@ -156,12 +197,7 @@ def _xlsx_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
     try:
         with zipfile.ZipFile(path) as archive:
             workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
-            rels = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
-            relationship_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
-            rel_map = {
-                relation.attrib.get("Id", ""): relation.attrib.get("Target", "")
-                for relation in rels.findall(f"{{{relationship_ns}}}Relationship")
-            }
+            rel_map = _relationship_targets(archive, "xl/_rels/workbook.xml.rels")
             shared_strings: list[str] = []
             if "xl/sharedStrings.xml" in archive.namelist():
                 shared_root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
@@ -175,13 +211,11 @@ def _xlsx_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
                 name = sheet.attrib.get("name", "Sheet")
                 relation_id = sheet.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id", "")
                 target = rel_map.get(relation_id, "")
-                member = target.lstrip("/")
-                if not member.startswith("xl/"):
-                    member = f"xl/{member}"
+                member = _archive_target("xl", target)
+                if member not in archive.namelist():
+                    raise KeyError(f"Missing worksheet relationship target: {relation_id}")
                 sheets.append(name)
                 anchors.add(f"sheet:{name}")
-                if member not in archive.namelist():
-                    continue
                 sheet_root = ElementTree.fromstring(archive.read(member))
                 for cell in sheet_root.findall(".//s:c", _NS):
                     ref = cell.attrib.get("r")
@@ -206,13 +240,13 @@ def _xlsx_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
 def index_file(root: Path, relative_path: str) -> SourceSnapshot | None:
     """Return one immutable snapshot, or ``None`` when the file is absent."""
 
-    root = root.resolve()
-    path = (root / relative_path).resolve()
     try:
+        root = root.resolve()
+        path = (root / relative_path).resolve()
         path.relative_to(root)
-    except ValueError:
+    except (OSError, ValueError):
         # Do not even hash or parse a path that escapes the selected root,
-        # including a symlink that resolves outside it.
+        # is invalid, or is a symlink that resolves outside it.
         return None
     if not path.is_file():
         return None
@@ -239,14 +273,17 @@ def index_file(root: Path, relative_path: str) -> SourceSnapshot | None:
         anchors = _base_anchors(path)
         metadata = {"parse": "file-only", "suffix": suffix}
         kind = suffix[1:] if suffix else "file"
-    return SourceSnapshot(
-        path=relative_path,
-        kind=kind,
-        sha256=_sha256(path),
-        size_bytes=path.stat().st_size,
-        anchors=frozenset(anchors),
-        metadata=metadata,
-    )
+    try:
+        return SourceSnapshot(
+            path=relative_path,
+            kind=kind,
+            sha256=_sha256(path),
+            size_bytes=path.stat().st_size,
+            anchors=frozenset(anchors),
+            metadata=metadata,
+        )
+    except OSError:
+        return None
 
 
 def index_manifest_sources(root: Path, manifest: ProjectManifest) -> tuple[SourceSnapshot, ...]:
