@@ -6,6 +6,7 @@ from pathlib import Path
 
 from evidence_office.model import ProjectManifest
 from evidence_office.report import render_html, report_to_dict
+from evidence_office.source_index import index_file
 from evidence_office.validator import validate_manifest
 
 
@@ -41,6 +42,39 @@ class ValidationBehaviourTests(unittest.TestCase):
             html = render_html(report)
             self.assertIn("Efficiency is 0.91.", html)
             self.assertIn("row:1/field:value", html)
+
+    def test_nested_json_pointer_anchor_can_be_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "results.json").write_text(
+                '{"metrics": {"efficiency": 0.91, "runs": [{"id": 1}]}}',
+                encoding="utf-8",
+            )
+            manifest = ProjectManifest.from_mapping({
+                "project": "Nested JSON demo",
+                "sources": [{"path": "results.json"}],
+                "claims": [{
+                    "id": "C-001",
+                    "statement": "Efficiency is 0.91.",
+                    "status": "verified",
+                    "sources": [{"path": "results.json", "anchor": "json:/metrics/efficiency"}],
+                }],
+            })
+
+            report = validate_manifest(manifest, root)
+
+            self.assertEqual(report.status, "passed")
+
+    def test_index_file_does_not_read_outside_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            root = parent / "root"
+            root.mkdir()
+            (parent / "outside.json").write_text('{"secret": true}', encoding="utf-8")
+
+            snapshot = index_file(root, "../outside.json")
+
+            self.assertIsNone(snapshot)
 
     def test_verified_claim_cannot_use_only_a_file_level_anchor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

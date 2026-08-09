@@ -17,6 +17,7 @@ _WORKFLOW_README = """# Evidence Office review workflow
 3. Add claims to `manifest.json`; every `verified` claim needs a precise source anchor.
 4. Run `evidence-office validate manifest.json` while editing.
 5. Run `evidence-office build manifest.json --out dist/` to create the review packet.
+6. Use `--strict` in CI when warnings must block delivery.
 
 The generated packet is deterministic except for its report timestamp. It is a
 validation aid, not a substitute for engineering or scientific review.
@@ -66,6 +67,8 @@ def create_workspace(out_dir: Path, project: str, description: str = "") -> Path
     """Create a new project workspace without overwriting an existing one."""
 
     out_dir = out_dir.resolve()
+    if out_dir.exists() and not out_dir.is_dir():
+        raise FileExistsError(f"Workspace path is not a directory: {out_dir}")
     if out_dir.exists() and any(out_dir.iterdir()):
         raise FileExistsError(f"Workspace is not empty; refusing to overwrite: {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)

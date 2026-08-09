@@ -6,7 +6,7 @@ It answers a question that ordinary AI document tools usually leave implicit:
 
 > Which source supports this claim, can the source be found, and can another person audit the exact location?
 
-The first release does not pretend to replace a domain expert. It creates a deterministic evidence manifest, indexes declared CSV/JSON/text/DOCX/XLSX/PPTX sources, checks claim-to-source links, and writes both a machine-readable JSON report and a standalone HTML report.
+This project does not pretend to replace a domain expert. It creates a deterministic evidence manifest, indexes declared CSV/JSON/text/DOCX/XLSX/PPTX sources, checks claim-to-source links, and writes both a machine-readable JSON report and a standalone HTML report.
 
 The report includes a claim ledger, so a reviewer can read every statement and its exact evidence references without reopening the manifest.
 
@@ -131,10 +131,13 @@ Common anchors:
 | XLSX | `sheet:Results/cell:B2`, `sheet:Results/row:2` |
 | DOCX | `paragraph:3`, `table:1/row:2/cell:1` |
 | PPTX | `slide:4`, `slide:4/text` |
-| JSON | `key:metrics`, `item:2` |
+| JSON | `key:metrics`, `item:2`, `json:/metrics/efficiency`, `json:/runs/0/id` |
 | Markdown/text | `line:12` |
 
 For a `verified` claim, a generic file-level anchor such as `file` is intentionally rejected. It proves only that a file exists, not where the claim is supported.
+
+JSON also supports escaped JSON Pointer-style anchors. Use `~0` for `~` and
+`~1` for `/` inside an object key, for example `json:/metrics/a~1b`.
 
 ## Commands
 
@@ -142,11 +145,17 @@ For a `verified` claim, a generic file-level anchor such as `file` is intentiona
 # Human-readable validation; exit code 1 means blocking errors.
 evidence-office validate manifest.json --format text
 
+# Strict validation; warnings also produce exit code 1 for CI gates.
+evidence-office validate manifest.json --strict
+
 # Machine-readable validation for CI.
 evidence-office validate manifest.json --format json --out validation.json
 
 # Standalone HTML report and JSON report package.
 evidence-office build manifest.json --out dist/
+
+# Strict build; still writes the report package, but fails on warnings.
+evidence-office build manifest.json --out dist/ --strict
 
 # Inspect the anchors available in one source.
 evidence-office inspect results.csv --root .
@@ -155,7 +164,7 @@ evidence-office inspect results.csv --root .
 Exit codes:
 
 - `0`: passed or passed with warnings;
-- `1`: validation completed and found blocking errors;
+- `1`: validation completed and found blocking errors, or `--strict` found review warnings;
 - `2`: the command itself could not read or parse the requested input.
 
 ## Safety and honest limits

@@ -38,7 +38,7 @@ def _validate_command(args: argparse.Namespace) -> int:
     else:
         content = render_text(report)
     _write_or_print(content, args.out)
-    return 1 if report.status == "failed" else 0
+    return 1 if report.status == "failed" or (args.strict and report.warnings) else 0
 
 
 def _build_command(args: argparse.Namespace) -> int:
@@ -49,7 +49,7 @@ def _build_command(args: argparse.Namespace) -> int:
     print(f"JSON: {json_path}")
     print(f"HTML: {html_path}")
     print(f"Status: {report.status}")
-    return 1 if report.status == "failed" else 0
+    return 1 if report.status == "failed" or (args.strict and report.warnings) else 0
 
 
 def _inspect_command(args: argparse.Namespace) -> int:
@@ -110,12 +110,14 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--root", type=Path, help="Root directory containing declared sources; defaults to the manifest directory.")
     validate.add_argument("--format", choices=("text", "json", "html"), default="text")
     validate.add_argument("--out", type=Path, help="Write the report to a file instead of stdout.")
+    validate.add_argument("--strict", action="store_true", help="Treat review warnings as a blocking exit code.")
     validate.set_defaults(handler=_validate_command)
 
     build = subparsers.add_parser("build", help="Validate and write a portable report package.")
     build.add_argument("manifest", type=Path)
     build.add_argument("--root", type=Path)
     build.add_argument("--out", type=Path, required=True)
+    build.add_argument("--strict", action="store_true", help="Treat review warnings as a blocking exit code.")
     build.set_defaults(handler=_build_command)
 
     inspect = subparsers.add_parser("inspect", help="Inspect a source file and list deterministic anchors.")
@@ -158,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return int(args.handler(args))
-    except (FileNotFoundError, IsADirectoryError, PermissionError, UnicodeError, ValueError) as exc:
+    except (FileExistsError, FileNotFoundError, IsADirectoryError, NotADirectoryError, PermissionError, UnicodeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

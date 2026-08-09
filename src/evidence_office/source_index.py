@@ -35,7 +35,7 @@ def _zip_xml(path: Path, member: str) -> ElementTree.Element | None:
     try:
         with zipfile.ZipFile(path) as archive:
             return ElementTree.fromstring(archive.read(member))
-    except (KeyError, ElementTree.ParseError, zipfile.BadZipFile):
+    except (KeyError, ElementTree.ParseError, OSError, RuntimeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile):
         return None
 
 
@@ -66,8 +66,29 @@ def _json_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
     try:
         with path.open("r", encoding="utf-8") as handle:
             value = json.load(handle)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, RecursionError, json.JSONDecodeError) as exc:
         return anchors, {"parse": "unavailable", "error": str(exc)}
+    # Keep the original shallow anchors for compatibility and add escaped
+    # JSON Pointer-style paths for nested evidence, e.g.
+    # ``json:/metrics/efficiency`` or ``json:/runs/0/id``.
+    anchors.add("json:/")
+    pointers = 1
+    stack: list[tuple[str, object]] = [("", value)]
+    while stack:
+        pointer, current = stack.pop()
+        if isinstance(current, dict):
+            for key, child in current.items():
+                escaped = str(key).replace("~", "~0").replace("/", "~1")
+                child_pointer = f"{pointer}/{escaped}"
+                anchors.add(f"json:{child_pointer}")
+                pointers += 1
+                stack.append((child_pointer, child))
+        elif isinstance(current, list):
+            for index, child in enumerate(current):
+                child_pointer = f"{pointer}/{index}"
+                anchors.add(f"json:{child_pointer}")
+                pointers += 1
+                stack.append((child_pointer, child))
     if isinstance(value, dict):
         anchors.update(f"key:{key}" for key in value)
         metadata = {"top_level": "object", "keys": sorted(value)}
@@ -76,6 +97,7 @@ def _json_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
         metadata = {"top_level": "array", "items": len(value)}
     else:
         metadata = {"top_level": type(value).__name__}
+    metadata["json_pointers"] = pointers
     return anchors, metadata
 
 
@@ -124,7 +146,7 @@ def _pptx_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
                 anchors.add(f"slide:{slide_number}/text")
                 anchors.add(f"slide:{slide_number}/text-count:{text_count}")
             image_count = len([member for member in members if member.startswith("ppt/media/")])
-    except (KeyError, ElementTree.ParseError, zipfile.BadZipFile):
+    except (KeyError, ElementTree.ParseError, OSError, RuntimeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile):
         return anchors, {"parse": "unavailable"}
     return anchors, {"slides": sorted(slide_numbers), "images": image_count}
 
@@ -177,14 +199,21 @@ def _xlsx_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
                             if index < len(shared_strings):
                                 anchors.add(f"sheet:{name}/cell:{ref}/value:{shared_strings[index]}")
             return anchors, {"sheets": sheets, "cells": cell_count}
-    except (KeyError, ElementTree.ParseError, zipfile.BadZipFile):
+    except (KeyError, ElementTree.ParseError, OSError, RuntimeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile):
         return anchors, {"parse": "unavailable"}
 
 
 def index_file(root: Path, relative_path: str) -> SourceSnapshot | None:
     """Return one immutable snapshot, or ``None`` when the file is absent."""
 
+    root = root.resolve()
     path = (root / relative_path).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        # Do not even hash or parse a path that escapes the selected root,
+        # including a symlink that resolves outside it.
+        return None
     if not path.is_file():
         return None
     suffix = path.suffix.lower()

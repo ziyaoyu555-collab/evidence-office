@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 — 2026-08-09
+
+- fix `init` and `demo` crashes when the output path is an existing file;
+- prevent source indexing from reading paths that resolve outside the selected root;
+- add nested JSON Pointer-style anchors such as `json:/metrics/efficiency`;
+- add `--strict` to `validate` and `build` so review warnings can fail CI;
+- make report HTML read its displayed package version from the runtime;
+- expand the regression suite from 18 to 22 tests.
+
 ## 0.3.0 — 2026-08-09
 
 - add `init` to create a ready-to-use review workspace;
