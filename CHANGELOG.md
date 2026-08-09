@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.0 — 2026-08-09
+
+- add bounded, read-only SLX package indexing with system, block SID, block type, and percent-encoded block-path anchors;
+- expose model release, UUID, system count, block count, and block-type inventory while marking every SLX source `static-only` and `runtime_validated: false`;
+- add repeatable `inspect --anchor-prefix` filtering, `--limit`, total/matched counts, and explicit truncation status for large source inventories;
+- re-hash every source after anchor extraction so same-size edits with restored timestamps cannot be accepted as one immutable snapshot;
+- cap each evidence anchor at 4,096 characters across source indexers to prevent one hostile field, key, sheet, or block name from amplifying report size;
+- show analysis mode in text, Markdown, and HTML source inventories;
+- preserve full v0.7 checksum-package audit compatibility after advancing the current package schema to 0.8;
+- add a pinned Ruff quality gate so every pull request rejects lint and static-analysis regressions;
+- expand the regression suite from 90 to 98 tests and add a deterministic 1,000-case malformed-SLX stress run plus real R2021a model verification.
+
 ## 0.7.0 — 2026-08-09
 
 - reject ambiguous or nonstandard JSON, including duplicate keys, NaN/Infinity, overflowing exponents, invalid Unicode, and oversized documents;

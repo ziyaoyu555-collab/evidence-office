@@ -4,17 +4,25 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
-from .model import AuditReport, Issue, ProjectManifest, SCHEMA_VERSION, SourceSnapshot, SourceSpec
+from .model import (
+    SCHEMA_VERSION,
+    AuditReport,
+    Issue,
+    ProjectManifest,
+    SourceSnapshot,
+    SourceSpec,
+)
 from .report import PACKAGE_CONTENT_FILES
 from .storage import read_json
 from .validator import validate_manifest
 
-
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_SUPPORTED_SOURCE_INDEX_SCHEMAS = frozenset({"0.3", "0.6", SCHEMA_VERSION})
+_SUPPORTED_SOURCE_INDEX_SCHEMAS = frozenset({"0.3", "0.6", "0.7", SCHEMA_VERSION})
+_PACKAGE_INDEX_SCHEMAS = frozenset({"0.7", SCHEMA_VERSION})
 
 
 def _baseline_error(path: Path, message: str) -> Issue:
@@ -109,7 +117,7 @@ def _file_sha256(path: Path) -> str:
 
 def _package_integrity_issues(package_dir: Path, source_schema: str | None) -> list[Issue]:
     index_path = package_dir / "package-index.json"
-    if not index_path.exists() and source_schema != SCHEMA_VERSION:
+    if not index_path.exists() and source_schema not in _PACKAGE_INDEX_SCHEMAS:
         return []
     raw, read_issues = _read_json(index_path)
     if read_issues:
@@ -118,7 +126,8 @@ def _package_integrity_issues(package_dir: Path, source_schema: str | None) -> l
     if (
         not isinstance(raw, Mapping)
         or set(raw) != {"schema_version", "algorithm", "files"}
-        or raw.get("schema_version") != SCHEMA_VERSION
+        or source_schema not in _PACKAGE_INDEX_SCHEMAS
+        or raw.get("schema_version") != source_schema
         or raw.get("algorithm") != "sha256"
         or not isinstance(raw.get("files"), Mapping)
         or set(raw["files"]) != expected_names

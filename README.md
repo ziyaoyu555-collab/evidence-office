@@ -1,12 +1,12 @@
 # Evidence Office
 
-Evidence Office is a local-first, dependency-free validation layer for engineering and research Office deliverables.
+Evidence Office is a local-first, dependency-free validation layer for engineering and research deliverables.
 
 It answers a question that ordinary AI document tools usually leave implicit:
 
 > Which source supports this claim, can the source be found, and can another person audit the exact location?
 
-This project does not pretend to replace a domain expert. It creates a deterministic evidence manifest, indexes declared CSV/JSON/text and read-only DOCX/DOCM/XLSX/XLSM/PPTX/PPTM sources, checks claim-to-source links, and writes machine-readable and human-readable review reports.
+This project does not pretend to replace a domain expert. It creates a deterministic evidence manifest, indexes declared CSV/JSON/text, read-only DOCX/DOCM/XLSX/XLSM/PPTX/PPTM sources, and static SLX model structure, checks claim-to-source links, and writes machine-readable and human-readable review reports.
 
 The report includes a claim ledger, so a reviewer can read every statement, its
 claim note, and its exact evidence references and reference notes without
@@ -146,9 +146,15 @@ Common anchors:
 | PPTX | `slide:4`, `slide:4/text` (presentation order, including after slide reordering) |
 | JSON | `key:metrics`, `item:2`, `json:/metrics/efficiency`, `json:/runs/0/id` |
 | Markdown/text | `line:12` |
+| SLX | `system:Controler`, `block:562`, `block:562/type:SubSystem`, `block-path:Controler/Energy%20Management%20Strategy` |
 
 Macro-enabled Office files are parsed as ZIP/XML data only. Evidence Office
 does not execute VBA, formulas, embedded objects, links, or application code.
+
+SLX packages are also read as bounded ZIP/XML data. The index exposes system,
+block SID, block type, and percent-encoded block-path anchors, plus block counts
+and the recorded Simulink release. Reports label these sources `static-only` and
+`runtime_validated: false`: the model is never loaded, compiled, or simulated.
 
 For a `verified` claim, a generic file-level anchor such as `file` is intentionally rejected. It proves only that a file exists, not where the claim is supported.
 
@@ -178,11 +184,15 @@ evidence-office audit manifest.json --package dist/
 
 # Inspect the anchors available in one source.
 evidence-office inspect results.csv --root .
+
+# Keep a large model inventory readable.
+evidence-office inspect model.slx --root . --anchor-prefix block-path: --limit 50
 ```
 
-`inspect` includes an explicit `status`. It returns exit code `1` when parsing
-is unavailable or the file changes during indexing, so it can be used as a
-preflight gate rather than silently printing only file-level anchors.
+`inspect` includes an explicit `status`, total/matched anchor counts, and a
+truncation flag. `--anchor-prefix` is repeatable. It returns exit code `1` when
+parsing is unavailable or the file changes during indexing, so it can be used
+as a preflight gate rather than silently printing only file-level anchors.
 
 Exit codes:
 
@@ -206,18 +216,24 @@ Evidence Office validates the evidence links that are declared in the manifest. 
 
 Input parsing is fail-closed and resource-bounded: JSON and text-like sources
 are limited to 64 MiB, Office XML to 64 MiB per member and 256 MiB in total,
-Office archives to 10,000 entries, and each source to 250,000 anchors. Split a
-larger source or add a purpose-built adapter rather than weakening these
-limits. JSON duplicate keys, NaN/Infinity, numeric overflow, invalid Unicode,
-ambiguous CSV headers/rows, duplicate Office members/relationships, XML DTDs,
-and incomplete Office relationships are rejected.
+ZIP/XML archives to 10,000 entries, each source to 250,000 anchors, and each
+anchor to 4,096 characters. Split a larger source or add a purpose-built
+adapter rather than weakening these limits. JSON duplicate keys, NaN/Infinity,
+numeric overflow, invalid Unicode, ambiguous CSV headers/rows, duplicate ZIP
+members/relationships, XML DTDs, and incomplete package relationships are
+rejected.
 
 The package checksum inventory detects accidental or uncoordinated changes; it
 is not a digital signature. A party able to replace both a report and
 `package-index.json` can recompute the checksums. Signed manifests remain a
 separate roadmap item.
 
-The current package does not execute MATLAB, Simulink, SolidWorks, PowerPoint, WPS, or Windows-only workflows. Do not describe a static file scan as dynamic runtime acceptance. Those adapters belong to later releases with real target-runtime fixtures.
+The current package does not execute MATLAB, Simulink, SolidWorks, PowerPoint,
+WPS, or Windows-only workflows. MathWorks documents SLX as a compressed OPC
+package while warning that its internal content can change; unsupported future
+layouts therefore fail closed instead of being guessed. Do not describe a
+static file scan as dynamic runtime acceptance. See the official
+[SLX format guidance](https://www.mathworks.com/help/simulink/ug/save-models.html).
 
 ## Architecture
 
@@ -228,7 +244,7 @@ model.py         →  canonical manifest + derived report state
         ↓
 declared files
         ↓
-source_index.py  →  immutable fingerprints and anchors
+source_index.py  →  immutable fingerprints, Office anchors, and static SLX inventory
         ↓
 validator.py     →  blocking errors and visible warnings
         ↓
@@ -250,13 +266,14 @@ model-independent.
 GitHub Actions compiles, builds, installs, and tests the wheel on Linux with
 Python 3.10, 3.12, and 3.14, plus Python 3.12 on Windows. It then runs the
 installed console command through a complete demo → build → audit workflow, so
-the CI path does not depend on `PYTHONPATH`.
+the CI path does not depend on `PYTHONPATH`. Synthetic OPC fixtures exercise
+SLX success and fail-closed paths without redistributing private model files.
 
 ## Roadmap
 
 1. Add merged-cell and named-range metadata for XLSX/XLSM.
 2. Add a normalized claim/evidence export for PPT Master and DOCX generators.
-3. Add read-only `.slx` model inventory and explicit “static-only” labels.
+3. Extend static model inventory to explicit model-reference and Stateflow anchors.
 4. Add render/readback adapters only when the target runtime is actually available in CI or on a declared acceptance machine.
 5. Add signed evidence manifests after the schema is stable.
 

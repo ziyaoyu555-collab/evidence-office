@@ -1,5 +1,5 @@
-import json
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -147,9 +147,11 @@ class WorkflowBehaviourTests(unittest.TestCase):
                     raise OSError("simulated staging failure")
                 return original_write_text(path, data, *args, **kwargs)
 
-            with mock.patch.object(Path, "write_text", autospec=True, side_effect=fail_during_staging):
-                with self.assertRaisesRegex(OSError, "simulated staging failure"):
-                    write_package(report, manifest, dist)
+            with (
+                mock.patch.object(Path, "write_text", autospec=True, side_effect=fail_during_staging),
+                self.assertRaisesRegex(OSError, "simulated staging failure"),
+            ):
+                write_package(report, manifest, dist)
 
             for name in names:
                 self.assertEqual((dist / name).read_text(encoding="utf-8"), f"previous:{name}")
@@ -174,9 +176,11 @@ class WorkflowBehaviourTests(unittest.TestCase):
                     raise OSError("simulated commit failure")
                 return original_replace(path, target, *args, **kwargs)
 
-            with mock.patch.object(Path, "replace", autospec=True, side_effect=fail_one_commit):
-                with self.assertRaisesRegex(OSError, "simulated commit failure"):
-                    write_package(report, manifest, dist)
+            with (
+                mock.patch.object(Path, "replace", autospec=True, side_effect=fail_one_commit),
+                self.assertRaisesRegex(OSError, "simulated commit failure"),
+            ):
+                write_package(report, manifest, dist)
 
             self.assertEqual({path.name: path.read_bytes() for path in dist.iterdir()}, previous)
 

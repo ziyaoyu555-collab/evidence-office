@@ -1,4 +1,4 @@
-"""Deterministic, dependency-free source indexing for common Office inputs."""
+"""Deterministic, dependency-free source indexing for review inputs."""
 
 from __future__ import annotations
 
@@ -9,12 +9,11 @@ import posixpath
 import re
 import zipfile
 from pathlib import Path
-from typing import Iterable
+from urllib.parse import quote
 from xml.etree import ElementTree
 
 from .model import ProjectManifest, SourceSnapshot
 from .storage import read_json
-
 
 _CELL_RE = re.compile(r"^([A-Z]+)([0-9]+)$")
 _NS = {
@@ -29,6 +28,7 @@ _MAX_XML_MEMBER_BYTES = 64 * 1024 * 1024
 _MAX_XML_TOTAL_BYTES = 256 * 1024 * 1024
 _MAX_ARCHIVE_ENTRIES = 10_000
 _MAX_SOURCE_ANCHORS = 250_000
+_MAX_ANCHOR_CHARS = 4096
 _MAX_VALUE_ANCHOR_CHARS = 512
 _MAX_TEXT_SOURCE_BYTES = 64 * 1024 * 1024
 _TEXT_SOURCE_SUFFIXES = frozenset({".csv", ".json", ".md", ".txt", ".m"})
@@ -112,9 +112,33 @@ def _archive_target(base: str, target: str) -> str:
     return normalized
 
 
+def _related_member(
+    archive: zipfile.ZipFile,
+    members: set[str],
+    owner: str,
+    relation_id: str,
+) -> str:
+    folder, name = posixpath.split(owner)
+    relations = posixpath.join(folder, "_rels", f"{name}.rels")
+    if relations not in members:
+        raise KeyError(f"Missing relationships for archive member: {owner}")
+    target = _relationship_targets(archive, relations).get(relation_id, "")
+    member = _archive_target(folder, target)
+    if member not in members:
+        raise KeyError(f"Missing relationship target: {relation_id}")
+    return member
+
+
 def _check_anchor_budget(anchors: set[str]) -> None:
     if len(anchors) > _MAX_SOURCE_ANCHORS:
         raise _SourceLimitError("Source contains too many indexable anchors.")
+
+
+def _add_anchor(anchors: set[str], anchor: str) -> None:
+    if len(anchor) > _MAX_ANCHOR_CHARS:
+        raise _SourceLimitError("Evidence anchor exceeds the indexing character budget.")
+    anchors.add(anchor)
+    _check_anchor_budget(anchors)
 
 
 def _base_anchors(path: Path) -> set[str]:
@@ -152,10 +176,9 @@ def _csv_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
                 if None in row or any(value is None for value in row.values()):
                     raise ValueError(f"CSV row {row_number} does not match the header width.")
                 rows += 1
-                anchors.add(f"row:{row_number}")
+                _add_anchor(anchors, f"row:{row_number}")
                 for field in fields:
-                    anchors.add(f"row:{row_number}/field:{field}")
-                _check_anchor_budget(anchors)
+                    _add_anchor(anchors, f"row:{row_number}/field:{field}")
     except (OSError, UnicodeError, ValueError, csv.Error) as exc:
         return _unavailable(path, exc)
     return anchors, {"rows": rows, "fields": fields}
@@ -167,7 +190,7 @@ def _json_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
         value = read_json(path)
         # Keep the original shallow anchors for compatibility and add escaped
         # JSON Pointer-style paths for nested evidence.
-        anchors.add("json:/")
+        _add_anchor(anchors, "json:/")
         pointers = 1
         stack: list[tuple[str, object]] = [("", value)]
         while stack:
@@ -176,22 +199,22 @@ def _json_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
                 for key, child in current.items():
                     escaped = key.replace("~", "~0").replace("/", "~1")
                     child_pointer = f"{pointer}/{escaped}"
-                    anchors.add(f"json:{child_pointer}")
+                    _add_anchor(anchors, f"json:{child_pointer}")
                     pointers += 1
-                    _check_anchor_budget(anchors)
                     stack.append((child_pointer, child))
             elif isinstance(current, list):
                 for index, child in enumerate(current):
                     child_pointer = f"{pointer}/{index}"
-                    anchors.add(f"json:{child_pointer}")
+                    _add_anchor(anchors, f"json:{child_pointer}")
                     pointers += 1
-                    _check_anchor_budget(anchors)
                     stack.append((child_pointer, child))
         if isinstance(value, dict):
-            anchors.update(f"key:{key}" for key in value)
+            for key in value:
+                _add_anchor(anchors, f"key:{key}")
             metadata = {"top_level": "object", "keys": sorted(value)}
         elif isinstance(value, list):
-            anchors.update(f"item:{index}" for index in range(len(value)))
+            for index in range(len(value)):
+                _add_anchor(anchors, f"item:{index}")
             metadata = {"top_level": "array", "items": len(value)}
         else:
             metadata = {"top_level": type(value).__name__}
@@ -208,8 +231,7 @@ def _text_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
     try:
         with path.open("r", encoding="utf-8") as handle:
             for line_count, _line in enumerate(handle, start=1):
-                anchors.add(f"line:{line_count}")
-                _check_anchor_budget(anchors)
+                _add_anchor(anchors, f"line:{line_count}")
     except (OSError, UnicodeError, ValueError) as exc:
         return _unavailable(path, exc)
     return anchors, {"lines": line_count}
@@ -269,11 +291,10 @@ def _pptx_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
                 slide_numbers.add(slide_number)
                 root = _read_xml(archive, member)
                 text_count = len(root.findall(".//a:t", _NS))
-                anchors.add(f"slide:{slide_number}")
+                _add_anchor(anchors, f"slide:{slide_number}")
                 if text_count:
-                    anchors.add(f"slide:{slide_number}/text")
-                anchors.add(f"slide:{slide_number}/text-count:{text_count}")
-                _check_anchor_budget(anchors)
+                    _add_anchor(anchors, f"slide:{slide_number}/text")
+                _add_anchor(anchors, f"slide:{slide_number}/text-count:{text_count}")
             image_count = len([member for member in members if member.startswith("ppt/media/")])
     except _OFFICE_ERRORS:
         return _unavailable(path)
@@ -306,7 +327,7 @@ def _xlsx_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
                 if member not in members:
                     raise KeyError(f"Missing worksheet relationship target: {relation_id}")
                 sheets.append(name)
-                anchors.add(f"sheet:{name}")
+                _add_anchor(anchors, f"sheet:{name}")
                 sheet_root = _read_xml(archive, member)
                 seen_cells: set[str] = set()
                 for cell in sheet_root.findall(".//s:c", _NS):
@@ -316,10 +337,10 @@ def _xlsx_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
                     if ref in seen_cells:
                         raise ValueError(f"Worksheet contains a duplicate cell reference: {ref}")
                     seen_cells.add(ref)
-                    anchors.add(f"sheet:{name}/cell:{ref}")
+                    _add_anchor(anchors, f"sheet:{name}/cell:{ref}")
                     match = _CELL_RE.match(ref)
                     if match:
-                        anchors.add(f"sheet:{name}/row:{match.group(2)}")
+                        _add_anchor(anchors, f"sheet:{name}/row:{match.group(2)}")
                     cell_count += 1
                     value_node = cell.find("s:v", _NS)
                     value = value_node.text if value_node is not None else None
@@ -330,11 +351,120 @@ def _xlsx_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
                     elif cell.attrib.get("t") == "inlineStr":
                         value = "".join(node.text or "" for node in cell.findall(".//s:t", _NS))
                     if value and _valid_unicode(value) and len(value) <= _MAX_VALUE_ANCHOR_CHARS:
-                        anchors.add(f"sheet:{name}/cell:{ref}/value:{value}")
-                    _check_anchor_budget(anchors)
+                        _add_anchor(anchors, f"sheet:{name}/cell:{ref}/value:{value}")
             return anchors, {"sheets": sheets, "cells": cell_count}
     except _OFFICE_ERRORS:
         return _unavailable(path)
+
+
+def _slx_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
+    """Index model structure without loading Simulink or executing model code."""
+
+    anchors = _base_anchors(path)
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = _archive_members(archive)
+            diagram_member = "simulink/blockdiagram.xml"
+            diagram = _read_xml(archive, diagram_member)
+            model = diagram.find("Model")
+            if model is None:
+                model = diagram.find("Library")
+            if model is None:
+                raise ValueError("SLX block diagram has no model or library root.")
+            root_systems = model.findall("./System")
+            if len(root_systems) != 1 or not root_systems[0].attrib.get("Ref"):
+                raise ValueError("SLX block diagram must reference exactly one root system.")
+            root_member = _related_member(
+                archive,
+                members,
+                diagram_member,
+                root_systems[0].attrib["Ref"],
+            )
+            if not root_member.startswith("simulink/systems/") or not root_member.endswith(".xml"):
+                raise ValueError("SLX root system target is outside the systems inventory.")
+
+            pending: list[tuple[str, tuple[str, ...]]] = [(root_member, ())]
+            visited_systems: set[str] = set()
+            seen_sids: set[str] = set()
+            seen_paths: set[str] = set()
+            block_types: dict[str, int] = {}
+            while pending:
+                member, parent_path = pending.pop()
+                if member in visited_systems:
+                    raise ValueError(f"SLX system is referenced more than once: {member}")
+                visited_systems.add(member)
+                system = _read_xml(archive, member)
+                if system.tag.rsplit("}", 1)[-1] != "System":
+                    raise ValueError(f"SLX system member has an unexpected root: {member}")
+                system_path = "/".join(quote(part, safe="") for part in parent_path) or "root"
+                _add_anchor(anchors, f"system:{system_path}")
+
+                for block in system.findall("./Block"):
+                    sid = block.attrib.get("SID", "")
+                    name = block.attrib.get("Name", "")
+                    block_type = block.attrib.get("BlockType", "")
+                    if not sid or not name or not block_type:
+                        raise ValueError("SLX block has a missing SID, name, or type.")
+                    if not all(_valid_unicode(value) for value in (sid, name, block_type)):
+                        raise ValueError("SLX block metadata contains invalid Unicode.")
+                    if sid in seen_sids:
+                        raise ValueError(f"SLX block SID is duplicated: {sid}")
+                    seen_sids.add(sid)
+                    block_path = (*parent_path, name)
+                    encoded_path = "/".join(quote(part, safe="") for part in block_path)
+                    if encoded_path in seen_paths:
+                        raise ValueError(f"SLX block path is duplicated: {encoded_path}")
+                    seen_paths.add(encoded_path)
+                    encoded_sid = quote(sid, safe="")
+                    encoded_type = quote(block_type, safe="")
+                    for anchor in (
+                        f"block:{encoded_sid}",
+                        f"block:{encoded_sid}/type:{encoded_type}",
+                        f"block-path:{encoded_path}",
+                    ):
+                        _add_anchor(anchors, anchor)
+                    block_types[block_type] = block_types.get(block_type, 0) + 1
+
+                    nested = block.findall("./System")
+                    if len(nested) > 1:
+                        raise ValueError(f"SLX block has multiple nested systems: {sid}")
+                    if nested:
+                        relation_id = nested[0].attrib.get("Ref", "")
+                        if not relation_id:
+                            raise ValueError(f"SLX block has an empty system reference: {sid}")
+                        target = _related_member(archive, members, member, relation_id)
+                        if not target.startswith("simulink/systems/") or not target.endswith(".xml"):
+                            raise ValueError("SLX nested system target is outside the systems inventory.")
+                        pending.append((target, block_path))
+
+            metadata: dict[str, object] = {
+                "analysis": "static-only",
+                "runtime_validated": False,
+                "format": "slx-opc",
+                "systems": len(visited_systems),
+                "blocks": len(seen_sids),
+                "block_types": dict(sorted(block_types.items())),
+            }
+            release_member = "metadata/mwcorePropertiesReleaseInfo.xml"
+            if release_member in members:
+                release = _read_xml(archive, release_member).findtext("release")
+                if release:
+                    if not _valid_unicode(release) or len(release) > _MAX_VALUE_ANCHOR_CHARS:
+                        raise ValueError("SLX release metadata is invalid.")
+                    metadata["release"] = release
+            model_uuid = next(
+                (
+                    parameter.text
+                    for parameter in model.findall("./P")
+                    if parameter.attrib.get("Name") == "ModelUUID" and parameter.text
+                ),
+                None,
+            )
+            if model_uuid and _valid_unicode(model_uuid) and len(model_uuid) <= _MAX_VALUE_ANCHOR_CHARS:
+                metadata["model_uuid"] = model_uuid
+            return anchors, metadata
+    except _OFFICE_ERRORS as exc:
+        return _unavailable(path, exc)
 
 
 _SOURCE_INDEXERS = {
@@ -349,6 +479,7 @@ _SOURCE_INDEXERS = {
     ".pptm": _pptx_anchors,
     ".xlsx": _xlsx_anchors,
     ".xlsm": _xlsx_anchors,
+    ".slx": _slx_anchors,
 }
 
 
@@ -389,13 +520,20 @@ def index_file(root: Path, relative_path: str) -> SourceSnapshot | None:
         kind = suffix[1:] if suffix else "file"
     try:
         after_parse = path.stat()
-        if _stat_signature(before_hash) != _stat_signature(after_hash) or _stat_signature(after_hash) != _stat_signature(after_parse):
+        verified_sha256 = _sha256(path)
+        after_verify = path.stat()
+        if (
+            sha256 != verified_sha256
+            or _stat_signature(before_hash) != _stat_signature(after_hash)
+            or _stat_signature(after_hash) != _stat_signature(after_parse)
+            or _stat_signature(after_parse) != _stat_signature(after_verify)
+        ):
             metadata = {**metadata, "integrity": "changed"}
         return SourceSnapshot(
             path=relative_path,
             kind=kind,
             sha256=sha256,
-            size_bytes=after_parse.st_size,
+            size_bytes=after_verify.st_size,
             anchors=frozenset(anchors),
             metadata=metadata,
         )

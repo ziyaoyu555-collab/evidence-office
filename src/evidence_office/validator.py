@@ -19,7 +19,8 @@ from .storage import read_json
 def load_manifest(path: Path) -> ProjectManifest:
     raw = read_json(path)
     if not isinstance(raw, dict):
-        raise ValueError("Manifest root must be a JSON object")
+        # Keep every malformed-manifest failure in the CLI's ValueError contract.
+        raise ValueError("Manifest root must be a JSON object")  # noqa: TRY004
     return ProjectManifest.from_mapping(raw, manifest_path=path)
 
 

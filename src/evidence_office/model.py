@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import posixpath
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
-
+from typing import Any
 
 VALID_STATUSES = frozenset({"verified", "unverified", "assumption"})
-SCHEMA_VERSION = "0.7"
+SCHEMA_VERSION = "0.8"
 
 
 def anchor_sort_key(anchor: str) -> tuple[tuple[int, int | str], ...]:
@@ -50,7 +50,8 @@ def _mapping_items(value: Any, field_name: str) -> tuple[Mapping[str, Any], ...]
     if value is None:
         return ()
     if not isinstance(value, list):
-        raise ValueError(f"Manifest field '{field_name}' must be an array.")
+        # Manifest shape errors are user-data validation failures, not API misuse.
+        raise ValueError(f"Manifest field '{field_name}' must be an array.")  # noqa: TRY004
     if not all(isinstance(item, Mapping) for item in value):
         raise ValueError(f"Every entry in manifest field '{field_name}' must be an object.")
     return tuple(value)
@@ -70,7 +71,7 @@ class EvidenceRef:
     note: str | None = None
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "EvidenceRef":
+    def from_mapping(cls, raw: Mapping[str, Any]) -> EvidenceRef:
         _reject_unknown(raw, {"path", "anchor", "note"}, "evidence reference")
         return cls(
             path=_path_text(raw.get("path")),
@@ -88,7 +89,7 @@ class Claim:
     note: str | None = None
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "Claim":
+    def from_mapping(cls, raw: Mapping[str, Any]) -> Claim:
         _reject_unknown(raw, {"id", "statement", "status", "sources", "note"}, "claim")
         sources_raw = _mapping_items(raw.get("sources"), "claim.sources")
         return cls(
@@ -106,7 +107,7 @@ class SourceSpec:
     label: str | None = None
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "SourceSpec":
+    def from_mapping(cls, raw: Mapping[str, Any]) -> SourceSpec:
         _reject_unknown(raw, {"path", "label"}, "source")
         return cls(
             path=_path_text(raw.get("path")),
@@ -123,7 +124,7 @@ class ProjectManifest:
     manifest_path: Path | None = None
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any], manifest_path: Path | None = None) -> "ProjectManifest":
+    def from_mapping(cls, raw: Mapping[str, Any], manifest_path: Path | None = None) -> ProjectManifest:
         _reject_unknown(raw, {"project", "description", "sources", "claims"}, "manifest")
         sources_raw = _mapping_items(raw.get("sources"), "sources")
         claims_raw = _mapping_items(raw.get("claims"), "claims")

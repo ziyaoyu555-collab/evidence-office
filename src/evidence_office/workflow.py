@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from .model import VALID_STATUSES, ProjectManifest
 from .storage import json_text, write_text_atomic
 from .validator import load_manifest, validate_manifest
-
 
 _WORKFLOW_README = """# Evidence Office review workflow
 

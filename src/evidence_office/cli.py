@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from . import __version__
 from .audit import audit_package
 from .demo import create_demo
 from .model import ProjectManifest, ValidationReport, anchor_sort_key
-from .report import PACKAGE_FILES, render_html, render_json, render_text, safe_line, write_package
+from .report import (
+    PACKAGE_FILES,
+    render_html,
+    render_json,
+    render_text,
+    safe_line,
+    write_package,
+)
 from .source_index import index_file
 from .storage import json_text, write_text_atomic
 from .validator import load_manifest, validate_manifest
@@ -26,10 +34,8 @@ def _manifest_inputs(manifest_path: Path, manifest: ProjectManifest, root: Path)
     inputs = [manifest_path]
     for source in manifest.sources:
         if source.path:
-            try:
+            with contextlib.suppress(OSError, ValueError):
                 inputs.append((root / source.path).resolve())
-            except (OSError, ValueError):
-                pass
     return inputs
 
 
@@ -46,6 +52,13 @@ def _write_or_print(content: str, out: Path | None) -> None:
         print(write_text_atomic(out.resolve(), content))
     else:
         print(content, end="")
+
+
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("value must be at least 1")
+    return number
 
 
 _REPORT_RENDERERS: dict[str, Callable[[ValidationReport], str]] = {
@@ -104,13 +117,25 @@ def _inspect_command(args: argparse.Namespace) -> int:
         if snapshot.metadata.get("parse") == "unavailable"
         else "indexed"
     )
+    all_anchors = sorted(snapshot.anchors, key=anchor_sort_key)
+    matched_anchors = (
+        [
+            anchor for anchor in all_anchors
+            if any(anchor.startswith(prefix) for prefix in args.anchor_prefix)
+        ]
+        if args.anchor_prefix else all_anchors
+    )
+    anchors = matched_anchors[:args.limit] if args.limit else matched_anchors
     print(json_text({
         "status": status,
         "path": snapshot.path,
         "kind": snapshot.kind,
         "sha256": snapshot.sha256,
         "size_bytes": snapshot.size_bytes,
-        "anchors": sorted(snapshot.anchors, key=anchor_sort_key),
+        "anchor_count": len(all_anchors),
+        "matched_anchor_count": len(matched_anchors),
+        "anchors_truncated": len(anchors) < len(matched_anchors),
+        "anchors": anchors,
         "metadata": dict(snapshot.metadata),
     }), end="")
     return 0 if status == "indexed" else 1
@@ -179,6 +204,13 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = subparsers.add_parser("inspect", help="Inspect a source file and list deterministic anchors.")
     inspect.add_argument("path")
     inspect.add_argument("--root", type=Path, default=Path.cwd())
+    inspect.add_argument(
+        "--anchor-prefix",
+        action="append",
+        default=[],
+        help="Return only anchors with this prefix; repeat to match multiple prefixes.",
+    )
+    inspect.add_argument("--limit", type=_positive_int, help="Return at most this many matching anchors.")
     inspect.set_defaults(handler=_inspect_command)
 
     audit = subparsers.add_parser("audit", help="Check whether sources still match a built review package.")
