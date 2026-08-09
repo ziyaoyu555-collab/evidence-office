@@ -6,7 +6,7 @@ It answers a question that ordinary AI document tools usually leave implicit:
 
 > Which source supports this claim, can the source be found, and can another person audit the exact location?
 
-This project does not pretend to replace a domain expert. It creates a deterministic evidence manifest, indexes declared CSV/JSON/text/DOCX/XLSX/PPTX sources, checks claim-to-source links, and writes both a machine-readable JSON report and a standalone HTML report.
+This project does not pretend to replace a domain expert. It creates a deterministic evidence manifest, indexes declared CSV/JSON/text and read-only DOCX/DOCM/XLSX/XLSM/PPTX/PPTM sources, checks claim-to-source links, and writes machine-readable and human-readable review reports.
 
 The report includes a claim ledger, so a reviewer can read every statement, its
 claim note, and its exact evidence references and reference notes without
@@ -85,13 +85,17 @@ evidence-office build \
   --out ./energy-review/dist
 ```
 
-The build creates five useful outputs:
+The build atomically commits six useful outputs:
 
 - `evidence-report.json` for CI or downstream tools;
 - `evidence-report.html` for a human review page;
 - `evidence-map.md` for a portable Markdown review packet;
 - `source-index.json` for source fingerprints and available anchors;
-- `manifest.snapshot.json` for the exact canonical manifest accepted by the build.
+- `manifest.snapshot.json` for the exact canonical manifest accepted by the build;
+- `package-index.json` for SHA-256 checksums of the other five generated files.
+
+All six files are staged before replacement. If staging or commit fails, the
+previous generated set is restored instead of leaving a mixed old/new package.
 
 ## Manifest format
 
@@ -137,11 +141,14 @@ Common anchors:
 | Source | Anchor examples |
 | --- | --- |
 | CSV | `row:1`, `row:1/field:value` |
-| XLSX | `sheet:Results/cell:B2`, `sheet:Results/row:2` |
+| XLSX/XLSM | `sheet:Results/cell:B2`, `sheet:Results/row:2`, `sheet:Results/cell:B2/value:91` |
 | DOCX | `paragraph:3`, `table:1/row:2/cell:1` |
 | PPTX | `slide:4`, `slide:4/text` (presentation order, including after slide reordering) |
 | JSON | `key:metrics`, `item:2`, `json:/metrics/efficiency`, `json:/runs/0/id` |
 | Markdown/text | `line:12` |
+
+Macro-enabled Office files are parsed as ZIP/XML data only. Evidence Office
+does not execute VBA, formulas, embedded objects, links, or application code.
 
 For a `verified` claim, a generic file-level anchor such as `file` is intentionally rejected. It proves only that a file exists, not where the claim is supported.
 
@@ -173,6 +180,10 @@ evidence-office audit manifest.json --package dist/
 evidence-office inspect results.csv --root .
 ```
 
+`inspect` includes an explicit `status`. It returns exit code `1` when parsing
+is unavailable or the file changes during indexing, so it can be used as a
+preflight gate rather than silently printing only file-level anchors.
+
 Exit codes:
 
 - `0`: passed or passed with warnings;
@@ -182,7 +193,9 @@ Exit codes:
 `audit` returns exit code `1` when a source fingerprint differs from the
 package baseline, when a previously packaged source is missing, when a new
 declared source was added after the build, or when the manifest's canonical
-content changed. Formatting-only JSON changes do not create false drift. An
+content changed. It also verifies every generated file against
+`package-index.json`, detecting missing or modified reports. Formatting-only
+manifest JSON changes do not create false drift. An
 audit failure is a delivery gate for a stale package, not a program crash. The
 command also preserves validation warnings; add `--strict` when those warnings
 must block delivery.
@@ -190,6 +203,19 @@ must block delivery.
 ## Safety and honest limits
 
 Evidence Office validates the evidence links that are declared in the manifest. It does not prove that a simulation is scientifically correct, that an experiment was performed correctly, or that an engineering conclusion is safe. A green report means that this version's deterministic checks passed.
+
+Input parsing is fail-closed and resource-bounded: JSON and text-like sources
+are limited to 64 MiB, Office XML to 64 MiB per member and 256 MiB in total,
+Office archives to 10,000 entries, and each source to 250,000 anchors. Split a
+larger source or add a purpose-built adapter rather than weakening these
+limits. JSON duplicate keys, NaN/Infinity, numeric overflow, invalid Unicode,
+ambiguous CSV headers/rows, duplicate Office members/relationships, XML DTDs,
+and incomplete Office relationships are rejected.
+
+The package checksum inventory detects accidental or uncoordinated changes; it
+is not a digital signature. A party able to replace both a report and
+`package-index.json` can recompute the checksums. Signed manifests remain a
+separate roadmap item.
 
 The current package does not execute MATLAB, Simulink, SolidWorks, PowerPoint, WPS, or Windows-only workflows. Do not describe a static file scan as dynamic runtime acceptance. Those adapters belong to later releases with real target-runtime fixtures.
 
@@ -211,6 +237,8 @@ report.py        →  JSON + standalone HTML
 audit.py         →  post-build source drift gate
         ↓
 CI / review / downstream Office compiler
+
+storage.py       →  strict JSON + atomic persistence shared by the workflow
 ```
 
 The core deliberately has no LLM dependency. `ProjectManifest.to_mapping()` is
@@ -219,13 +247,14 @@ instead of stored in parallel fields. AI-assisted manifest authoring can be
 added later, but the evidence gate must remain deterministic and
 model-independent.
 
-GitHub Actions compiles, builds, installs, and tests the wheel on Python 3.10,
-3.12, and 3.14. It then runs the installed console command through a complete
-demo → build → audit workflow, so the CI path does not depend on `PYTHONPATH`.
+GitHub Actions compiles, builds, installs, and tests the wheel on Linux with
+Python 3.10, 3.12, and 3.14, plus Python 3.12 on Windows. It then runs the
+installed console command through a complete demo → build → audit workflow, so
+the CI path does not depend on `PYTHONPATH`.
 
 ## Roadmap
 
-1. Add richer XLSX values and merged-cell metadata.
+1. Add merged-cell and named-range metadata for XLSX/XLSM.
 2. Add a normalized claim/evidence export for PPT Master and DOCX generators.
 3. Add read-only `.slx` model inventory and explicit “static-only” labels.
 4. Add render/readback adapters only when the target runtime is actually available in CI or on a declared acceptance machine.

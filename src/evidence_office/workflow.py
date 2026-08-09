@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Iterable
 
 from .model import VALID_STATUSES, ProjectManifest
+from .storage import json_text, write_text_atomic
 from .validator import load_manifest, validate_manifest
 
 
@@ -36,9 +36,7 @@ def _relative_source(root: Path, raw_path: str) -> str:
 
 
 def _write_manifest(path: Path, data: dict[str, object]) -> None:
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    write_text_atomic(path, json_text(data))
 
 
 def create_workspace(out_dir: Path, project: str, description: str = "") -> Path:

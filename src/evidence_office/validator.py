@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -14,14 +13,11 @@ from .model import (
     ValidationReport,
 )
 from .source_index import index_manifest_sources
+from .storage import read_json
 
 
 def load_manifest(path: Path) -> ProjectManifest:
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            raw = json.load(handle)
-    except RecursionError as exc:
-        raise ValueError("Manifest JSON is too deeply nested.") from exc
+    raw = read_json(path)
     if not isinstance(raw, dict):
         raise ValueError("Manifest root must be a JSON object")
     return ProjectManifest.from_mapping(raw, manifest_path=path)
@@ -80,6 +76,13 @@ def validate_manifest(manifest: ProjectManifest, root: Path) -> ValidationReport
                 if source_exists else f"Declared source does not exist: {spec.path}"
             )
             issues.append(Issue("error", code, message, path=spec.path))
+        elif by_path[spec.path].metadata.get("integrity") == "changed":
+            issues.append(Issue(
+                "error",
+                "SOURCE_CHANGED_DURING_INDEX",
+                f"Source changed while its fingerprint and anchors were being indexed: {spec.path}",
+                path=spec.path,
+            ))
         elif by_path[spec.path].metadata.get("parse") == "unavailable":
             issues.append(Issue("error", "SOURCE_PARSE_UNAVAILABLE", f"Source could not be indexed safely: {spec.path}", path=spec.path))
 
@@ -111,7 +114,7 @@ def validate_manifest(manifest: ProjectManifest, root: Path) -> ValidationReport
             snapshot = by_path.get(ref.path)
             if snapshot is None:
                 continue
-            if snapshot.metadata.get("parse") == "unavailable":
+            if snapshot.metadata.get("parse") == "unavailable" or snapshot.metadata.get("integrity") == "changed":
                 continue
             if claim.status == "verified" and not ref.anchor:
                 _add_claim_issue(issues, "error", "VERIFIED_EVIDENCE_ANCHOR_MISSING", "A verified evidence reference must include a precise anchor.", claim, path=ref.path)
