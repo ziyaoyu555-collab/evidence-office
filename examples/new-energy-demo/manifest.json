@@ -1,0 +1,24 @@
+{
+  "project": "Synthetic new-energy evidence demo",
+  "description": "Synthetic values only; not a real simulation or field result.",
+  "sources": [
+    {"path": "simulation_results.csv", "label": "Synthetic result table"}
+  ],
+  "claims": [
+    {
+      "id": "C-001",
+      "statement": "The synthetic-02 run has a tracking error of 0.16 m.",
+      "status": "verified",
+      "sources": [
+        {"path": "simulation_results.csv", "anchor": "row:2/field:tracking_error_m"}
+      ]
+    },
+    {
+      "id": "A-001",
+      "statement": "The controller may be suitable for a future real-vehicle test.",
+      "status": "assumption",
+      "sources": [{"path": "simulation_results.csv", "anchor": "file"}],
+      "note": "This must not be presented as a validated dynamic result."
+    }
+  ]
+}

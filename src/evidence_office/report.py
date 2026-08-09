@@ -1,0 +1,127 @@
+"""Stable JSON, text, and standalone HTML representations of validation results."""
+
+from __future__ import annotations
+
+import html
+import json
+from dataclasses import asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .model import ProjectManifest, ValidationReport
+
+
+def report_to_dict(report: ValidationReport) -> dict[str, Any]:
+    return {
+        "schema_version": "0.1",
+        "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "project": report.project,
+        "status": report.status,
+        "claims_checked": report.claims_checked,
+        "summary": {
+            "errors": len(report.errors),
+            "warnings": len(report.warnings),
+            "sources_indexed": len(report.sources),
+        },
+        "issues": [asdict(issue) for issue in report.issues],
+        "sources": [
+            {
+                "path": source.path,
+                "kind": source.kind,
+                "sha256": source.sha256,
+                "size_bytes": source.size_bytes,
+                "anchors": sorted(source.anchors),
+                "metadata": dict(source.metadata),
+            }
+            for source in report.sources
+        ],
+    }
+
+
+def render_json(report: ValidationReport) -> str:
+    return json.dumps(report_to_dict(report), ensure_ascii=False, indent=2) + "\n"
+
+
+def render_text(report: ValidationReport) -> str:
+    lines = [
+        f"Project: {report.project or '(unnamed)'}",
+        f"Status: {report.status}",
+        f"Claims checked: {report.claims_checked}",
+        f"Sources indexed: {len(report.sources)}",
+        f"Errors: {len(report.errors)} | Warnings: {len(report.warnings)}",
+    ]
+    if report.issues:
+        lines.append("Issues:")
+        for issue in report.issues:
+            location = ""
+            if issue.claim_id:
+                location += f" claim={issue.claim_id}"
+            if issue.path:
+                location += f" path={issue.path}"
+            if issue.anchor:
+                location += f" anchor={issue.anchor}"
+            lines.append(f"- [{issue.severity}] {issue.code}:{location} {issue.message}")
+    else:
+        lines.append("No issues.")
+    return "\n".join(lines) + "\n"
+
+
+def render_html(report: ValidationReport) -> str:
+    data = report_to_dict(report)
+    status_class = "ok" if report.status == "passed" else "warn" if report.status == "passed_with_warnings" else "fail"
+    issue_rows = "".join(
+        "<tr>"
+        f"<td><span class='badge {html.escape(issue.severity)}'>{html.escape(issue.severity)}</span></td>"
+        f"<td><code>{html.escape(issue.code)}</code></td>"
+        f"<td>{html.escape(issue.message)}</td>"
+        f"<td>{html.escape(issue.claim_id or '')}</td>"
+        f"<td>{html.escape(issue.path or '')}{(' · ' + html.escape(issue.anchor)) if issue.anchor else ''}</td>"
+        "</tr>"
+        for issue in report.issues
+    )
+    source_rows = "".join(
+        "<tr>"
+        f"<td><code>{html.escape(source['path'])}</code></td>"
+        f"<td>{html.escape(source['kind'])}</td>"
+        f"<td>{source['size_bytes']}</td>"
+        f"<td><code>{html.escape(source['sha256'][:16])}…</code></td>"
+        f"<td>{len(source['anchors'])}</td>"
+        "</tr>"
+        for source in data["sources"]
+    )
+    issues_block = (
+        "<p class='muted'>No issues. Every checked rule passed.</p>"
+        if not report.issues
+        else f"<table><thead><tr><th>Level</th><th>Code</th><th>Message</th><th>Claim</th><th>Location</th></tr></thead><tbody>{issue_rows}</tbody></table>"
+    )
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Evidence report — {html.escape(report.project or 'unnamed')}</title>
+<style>
+:root {{ color-scheme: light dark; --bg:#0b1020; --panel:#141b2d; --text:#edf2ff; --muted:#aeb9d2; --line:#2b3858; --ok:#53d39b; --warn:#f2c96d; --fail:#ff7e89; }}
+* {{ box-sizing:border-box; }} body {{ margin:0; font:15px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }}
+main {{ max-width:1120px; margin:0 auto; padding:48px 24px 72px; }} h1 {{ margin:0 0 8px; font-size:34px; }} h2 {{ margin:36px 0 14px; font-size:20px; }} .muted {{ color:var(--muted); }}
+.hero {{ display:flex; gap:16px; align-items:center; justify-content:space-between; margin-bottom:28px; }} .status {{ border:1px solid var(--line); border-radius:999px; padding:8px 14px; font-weight:700; }} .status.ok {{ color:var(--ok); }} .status.warn {{ color:var(--warn); }} .status.fail {{ color:var(--fail); }}
+.cards {{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }} .card {{ background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; }} .card b {{ display:block; font-size:26px; }} .card span {{ color:var(--muted); }}
+table {{ width:100%; border-collapse:collapse; overflow:hidden; background:var(--panel); border:1px solid var(--line); border-radius:14px; }} th,td {{ padding:11px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }} th {{ color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }} tr:last-child td {{ border-bottom:0; }} code {{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#c5d4ff; }} .badge {{ display:inline-block; border-radius:999px; padding:2px 8px; font-size:12px; font-weight:700; }} .badge.error {{ color:#24090d; background:var(--fail); }} .badge.warning {{ color:#2a2005; background:var(--warn); }} .badge.info {{ color:#06291b; background:var(--ok); }}
+@media(max-width:720px) {{ .hero {{ align-items:flex-start; flex-direction:column; }} .cards {{ grid-template-columns:repeat(2,1fr); }} table {{ display:block; overflow:auto; white-space:nowrap; }} }}
+</style></head><body><main>
+<div class="hero"><div><h1>Evidence report</h1><div class="muted">{html.escape(report.project or 'Unnamed project')}</div></div><div class="status {status_class}">{html.escape(report.status)}</div></div>
+<section class="cards"><div class="card"><b>{report.claims_checked}</b><span>claims checked</span></div><div class="card"><b>{len(report.sources)}</b><span>sources indexed</span></div><div class="card"><b>{len(report.errors)}</b><span>blocking errors</span></div><div class="card"><b>{len(report.warnings)}</b><span>review warnings</span></div></section>
+<h2>Issues</h2>{issues_block}
+<h2>Source fingerprints</h2><table><thead><tr><th>Path</th><th>Kind</th><th>Bytes</th><th>SHA-256</th><th>Anchors</th></tr></thead><tbody>{source_rows or '<tr><td colspan="5" class="muted">No existing declared sources.</td></tr>'}</tbody></table>
+<p class="muted" style="margin-top:28px">Generated by evidence-office 0.1.0. A passed report means only that the deterministic checks in this version passed; it is not a substitute for domain review.</p>
+</main></body></html>\n"""
+
+
+def write_package(report: ValidationReport, manifest: ProjectManifest, out_dir: Path) -> tuple[Path, Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    json_path = out_dir / "evidence-report.json"
+    html_path = out_dir / "evidence-report.html"
+    json_path.write_text(render_json(report), encoding="utf-8")
+    html_path.write_text(render_html(report), encoding="utf-8")
+    if manifest.manifest_path and manifest.manifest_path.is_file():
+        (out_dir / "manifest.snapshot.json").write_bytes(manifest.manifest_path.read_bytes())
+    return json_path, html_path
+
