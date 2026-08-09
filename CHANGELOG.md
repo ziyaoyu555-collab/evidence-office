@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.0 — 2026-08-09
+
+- reject ambiguous or nonstandard JSON, including duplicate keys, NaN/Infinity, overflowing exponents, invalid Unicode, and oversized documents;
+- bound text and Office indexing by bytes, archive entries, XML size, and anchor count; reject XML DTDs/entities, duplicate ZIP members/relationships, incomplete PPTX metadata, and ambiguous XLSX sheets/cells;
+- detect source files changed between hashing and anchor extraction instead of combining two versions into one snapshot;
+- add read-only DOCM, XLSM, and PPTM indexing plus precise XLSX numeric, shared-string, and inline-string value anchors;
+- protect manifests, declared sources, and audit baselines from CLI output collisions;
+- stage and atomically commit all generated files with rollback on failures and platform-stable newlines;
+- add `package-index.json` and audit generated-file checksums as well as source/manifest drift;
+- make `inspect` fail visibly on unavailable parsing and neutralize terminal and bidirectional controls in human output;
+- expand the regression suite from 57 to 90 tests, run adversarial JSON/Office/package mutation checks, and add a Windows 3.12 CI workflow alongside Linux 3.10/3.12/3.14.
+
 ## 0.6.0 — 2026-08-09
 
 - refactor manifest serialization, report state, exit handling, and CLI rendering behind smaller shared interfaces;

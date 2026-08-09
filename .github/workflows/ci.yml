@@ -35,3 +35,25 @@ jobs:
           evidence-office build /tmp/evidence-office-demo/manifest.json --out /tmp/evidence-office-demo/dist
       - name: Audit built example for source drift
         run: evidence-office audit /tmp/evidence-office-demo/manifest.json --package /tmp/evidence-office-demo/dist
+
+  windows-test:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Compile, install, and test
+        run: |
+          python -m compileall -q src tests
+          python -m pip install .
+          python -m unittest discover -s tests -v
+      - name: Run installed workflow
+        shell: pwsh
+        run: |
+          $demo = Join-Path $env:RUNNER_TEMP "evidence-office-demo"
+          evidence-office --version
+          evidence-office demo --out $demo
+          evidence-office build (Join-Path $demo "manifest.json") --out (Join-Path $demo "dist")
+          evidence-office audit (Join-Path $demo "manifest.json") --package (Join-Path $demo "dist")

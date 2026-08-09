@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 import posixpath
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
 
 VALID_STATUSES = frozenset({"verified", "unverified", "assumption"})
-SCHEMA_VERSION = "0.6"
+SCHEMA_VERSION = "0.7"
+
+
+def anchor_sort_key(anchor: str) -> tuple[tuple[int, int | str], ...]:
+    """Sort numbered anchors for people: line:2 before line:10."""
+
+    return tuple(
+        (1, int(part)) if part.isdigit() else (0, part)
+        for part in re.split(r"(\d+)", anchor)
+    )
 
 
 def _text(value: Any) -> str:

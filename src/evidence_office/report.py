@@ -3,18 +3,35 @@
 from __future__ import annotations
 
 import html
-import json
+import hashlib
 import re
+import unicodedata
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .model import AuditReport, ProjectManifest, SCHEMA_VERSION, SourceSnapshot, ValidationReport
+from .model import AuditReport, ProjectManifest, SCHEMA_VERSION, SourceSnapshot, ValidationReport, anchor_sort_key
+from .storage import json_text, write_texts_atomic
 
 
 Report = ValidationReport | AuditReport
+PACKAGE_CONTENT_FILES = (
+    "evidence-report.json",
+    "evidence-report.html",
+    "evidence-map.md",
+    "source-index.json",
+    "manifest.snapshot.json",
+)
+PACKAGE_FILES = (*PACKAGE_CONTENT_FILES, "package-index.json")
+
+
+def safe_line(value: object) -> str:
+    return "".join(
+        " " if unicodedata.category(character) in {"Cc", "Cf", "Cs"} else character
+        for character in str(value)
+    )
 
 
 def _source_to_dict(source: SourceSnapshot, include_details: bool = True) -> dict[str, Any]:
@@ -25,16 +42,16 @@ def _source_to_dict(source: SourceSnapshot, include_details: bool = True) -> dic
         "size_bytes": source.size_bytes,
     }
     if include_details:
-        data.update(anchors=sorted(source.anchors), metadata=dict(source.metadata))
+        data.update(anchors=sorted(source.anchors, key=anchor_sort_key), metadata=dict(source.metadata))
     return data
 
 
 def _md_text(value: object) -> str:
-    return html.escape(str(value), quote=False).replace("|", "\\|").replace("\n", " ")
+    return html.escape(safe_line(value), quote=False).replace("|", "\\|")
 
 
 def _md_code(value: object) -> str:
-    text = str(value).replace("|", "\\|").replace("\n", " ")
+    text = safe_line(value).replace("|", "\\|")
     longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
     fence = "`" * (longest + 1)
     content = f" {text} " if longest else text
@@ -43,8 +60,12 @@ def _md_code(value: object) -> str:
 
 def _html_reference(ref: dict[str, Any]) -> str:
     location = ref["path"] + (f"#{ref['anchor']}" if ref["anchor"] else "")
-    note = f" <span class='muted'>— {html.escape(ref['note'])}</span>" if ref["note"] else ""
-    return f"<code>{html.escape(location)}</code>{note}"
+    note = f" <span class='muted'>— {_html_text(ref['note'])}</span>" if ref["note"] else ""
+    return f"<code>{_html_text(location)}</code>{note}"
+
+
+def _html_text(value: object) -> str:
+    return html.escape(safe_line(value))
 
 
 def report_to_dict(report: Report) -> dict[str, Any]:
@@ -85,12 +106,12 @@ def report_to_dict(report: Report) -> dict[str, Any]:
 
 
 def render_json(report: Report) -> str:
-    return json.dumps(report_to_dict(report), ensure_ascii=False, indent=2) + "\n"
+    return json_text(report_to_dict(report))
 
 
 def render_text(report: Report) -> str:
     lines = [
-        f"Project: {report.project or '(unnamed)'}",
+        f"Project: {safe_line(report.project or '(unnamed)')}",
         f"Status: {report.status}",
         f"Claims checked: {report.claims_checked}",
         f"Sources indexed: {len(report.sources)}",
@@ -103,24 +124,26 @@ def render_text(report: Report) -> str:
         for issue in report.issues:
             location = ""
             if issue.claim_id:
-                location += f" claim={issue.claim_id}"
+                location += f" claim={safe_line(issue.claim_id)}"
             if issue.path:
-                location += f" path={issue.path}"
+                location += f" path={safe_line(issue.path)}"
             if issue.anchor:
-                location += f" anchor={issue.anchor}"
-            lines.append(f"- [{issue.severity}] {issue.code}:{location} {issue.message}")
+                location += f" anchor={safe_line(issue.anchor)}"
+            lines.append(f"- [{issue.severity}] {issue.code}:{location} {safe_line(issue.message)}")
     else:
         lines.append("No issues.")
     if report.claims:
         lines.append("Claims:")
         for claim in report.claims:
             references = ", ".join(
-                (f"{ref.path}#{ref.anchor}" if ref.anchor else ref.path)
-                + (f" ({ref.note})" if ref.note else "")
+                safe_line(f"{ref.path}#{ref.anchor}" if ref.anchor else ref.path)
+                + (f" ({safe_line(ref.note)})" if ref.note else "")
                 for ref in claim.sources
             ) or "(no evidence references)"
-            note = f" | Note: {claim.note}" if claim.note else ""
-            lines.append(f"- [{claim.status}] {claim.id}: {claim.statement} — {references}{note}")
+            note = f" | Note: {safe_line(claim.note)}" if claim.note else ""
+            lines.append(
+                f"- [{claim.status}] {safe_line(claim.id)}: {safe_line(claim.statement)} — {references}{note}"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -190,20 +213,20 @@ def render_html(report: Report) -> str:
     status_class = "ok" if report.status == "passed" else "warn" if report.status == "passed_with_warnings" else "fail"
     issue_rows = "".join(
         "<tr>"
-        f"<td><span class='badge {html.escape(issue.severity)}'>{html.escape(issue.severity)}</span></td>"
-        f"<td><code>{html.escape(issue.code)}</code></td>"
-        f"<td>{html.escape(issue.message)}</td>"
-        f"<td>{html.escape(issue.claim_id or '')}</td>"
-        f"<td>{html.escape(issue.path or '')}{(' · ' + html.escape(issue.anchor)) if issue.anchor else ''}</td>"
+        f"<td><span class='badge {_html_text(issue.severity)}'>{_html_text(issue.severity)}</span></td>"
+        f"<td><code>{_html_text(issue.code)}</code></td>"
+        f"<td>{_html_text(issue.message)}</td>"
+        f"<td>{_html_text(issue.claim_id or '')}</td>"
+        f"<td>{_html_text(issue.path or '')}{(' · ' + _html_text(issue.anchor)) if issue.anchor else ''}</td>"
         "</tr>"
         for issue in report.issues
     )
     source_rows = "".join(
         "<tr>"
-        f"<td><code>{html.escape(source['path'])}</code></td>"
-        f"<td>{html.escape(source['kind'])}</td>"
+        f"<td><code>{_html_text(source['path'])}</code></td>"
+        f"<td>{_html_text(source['kind'])}</td>"
         f"<td>{source['size_bytes']}</td>"
-        f"<td><code>{html.escape(source['sha256'][:16])}…</code></td>"
+        f"<td><code>{_html_text(source['sha256'][:16])}…</code></td>"
         f"<td>{len(source['anchors'])}</td>"
         "</tr>"
         for source in data["sources"]
@@ -211,11 +234,11 @@ def render_html(report: Report) -> str:
     empty_evidence = '<span class="muted">none</span>'
     claim_rows = "".join(
         "<tr>"
-        f"<td><code>{html.escape(claim['id'])}</code></td>"
-        f"<td><span class='badge claim-{html.escape(claim['status'])}'>{html.escape(claim['status'])}</span></td>"
-        f"<td>{html.escape(claim['statement'])}</td>"
+        f"<td><code>{_html_text(claim['id'])}</code></td>"
+        f"<td><span class='badge claim-{_html_text(claim['status'])}'>{_html_text(claim['status'])}</span></td>"
+        f"<td>{_html_text(claim['statement'])}</td>"
         f"<td>{'<br>'.join(_html_reference(ref) for ref in claim['sources']) or empty_evidence}</td>"
-        f"<td>{html.escape(claim['note'] or '')}</td>"
+        f"<td>{_html_text(claim['note'] or '')}</td>"
         "</tr>"
         for claim in data["claims"]
     )
@@ -226,7 +249,7 @@ def render_html(report: Report) -> str:
     )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{report_name} — {html.escape(report.project or 'unnamed')}</title>
+<title>{report_name} — {_html_text(report.project or 'unnamed')}</title>
 <style>
 :root {{ color-scheme: light dark; --bg:#0b1020; --panel:#141b2d; --text:#edf2ff; --muted:#aeb9d2; --line:#2b3858; --ok:#53d39b; --warn:#f2c96d; --fail:#ff7e89; }}
 * {{ box-sizing:border-box; }} body {{ margin:0; font:15px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }}
@@ -236,30 +259,33 @@ main {{ max-width:1120px; margin:0 auto; padding:48px 24px 72px; }} h1 {{ margin
 table {{ width:100%; border-collapse:collapse; overflow:hidden; background:var(--panel); border:1px solid var(--line); border-radius:14px; }} th,td {{ padding:11px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }} th {{ color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }} tr:last-child td {{ border-bottom:0; }} code {{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#c5d4ff; }} .badge {{ display:inline-block; border-radius:999px; padding:2px 8px; font-size:12px; font-weight:700; }} .badge.error {{ color:#24090d; background:var(--fail); }} .badge.warning, .badge.claim-assumption, .badge.claim-unverified {{ color:#2a2005; background:var(--warn); }} .badge.claim-verified {{ color:#06291b; background:var(--ok); }} .badge.info {{ color:#06291b; background:var(--ok); }}
 @media(max-width:720px) {{ .hero {{ align-items:flex-start; flex-direction:column; }} .cards {{ grid-template-columns:repeat(2,1fr); }} table {{ display:block; overflow:auto; white-space:nowrap; }} }}
 </style></head><body><main>
-<div class="hero"><div><h1>{report_name}</h1><div class="muted">{html.escape(report.project or 'Unnamed project')}</div></div><div class="status {status_class}">{html.escape(report.status)}</div></div>
+<div class="hero"><div><h1>{report_name}</h1><div class="muted">{_html_text(report.project or 'Unnamed project')}</div></div><div class="status {status_class}">{_html_text(report.status)}</div></div>
 <section class="cards"><div class="card"><b>{report.claims_checked}</b><span>claims checked</span></div><div class="card"><b>{len(report.sources)}</b><span>sources indexed</span></div>{baseline_card}<div class="card"><b>{len(report.errors)}</b><span>blocking errors</span></div><div class="card"><b>{len(report.warnings)}</b><span>review warnings</span></div></section>
 <h2>Claim ledger</h2><table><thead><tr><th>ID</th><th>Status</th><th>Statement</th><th>Evidence</th><th>Note</th></tr></thead><tbody>{claim_rows or '<tr><td colspan="5" class="muted">No claims declared.</td></tr>'}</tbody></table>
 <h2>Issues</h2>{issues_block}
 <h2>Source fingerprints</h2><table><thead><tr><th>Path</th><th>Kind</th><th>Bytes</th><th>SHA-256</th><th>Anchors</th></tr></thead><tbody>{source_rows or '<tr><td colspan="5" class="muted">No existing declared sources.</td></tr>'}</tbody></table>
-<p class="muted" style="margin-top:28px">Generated by evidence-office {html.escape(__version__)}. A passed report means only that the deterministic checks in this version passed; it is not a substitute for domain review.</p>
+<p class="muted" style="margin-top:28px">Generated by evidence-office {_html_text(__version__)}. A passed report means only that the deterministic checks in this version passed; it is not a substitute for domain review.</p>
 </main></body></html>\n"""
 
 
 def write_package(report: ValidationReport, manifest: ProjectManifest, out_dir: Path) -> tuple[Path, Path]:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    json_path = out_dir / "evidence-report.json"
-    html_path = out_dir / "evidence-report.html"
-    markdown_path = out_dir / "evidence-map.md"
-    source_index_path = out_dir / "source-index.json"
-    json_path.write_text(render_json(report), encoding="utf-8")
-    html_path.write_text(render_html(report), encoding="utf-8")
-    markdown_path.write_text(render_markdown(report), encoding="utf-8")
-    source_index_path.write_text(json.dumps({
+    contents = {
+        "evidence-report.json": render_json(report),
+        "evidence-report.html": render_html(report),
+        "evidence-map.md": render_markdown(report),
+        "source-index.json": json_text({
+            "schema_version": SCHEMA_VERSION,
+            "sources": [_source_to_dict(source) for source in report.sources],
+        }),
+        "manifest.snapshot.json": json_text(manifest.to_mapping()),
+    }
+    contents["package-index.json"] = json_text({
         "schema_version": SCHEMA_VERSION,
-        "sources": [_source_to_dict(source) for source in report.sources],
-    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    (out_dir / "manifest.snapshot.json").write_text(
-        json.dumps(manifest.to_mapping(), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return json_path, html_path
+        "algorithm": "sha256",
+        "files": {
+            name: hashlib.sha256(contents[name].encode("utf-8")).hexdigest()
+            for name in PACKAGE_CONTENT_FILES
+        },
+    })
+    paths = write_texts_atomic(out_dir, contents)
+    return paths["evidence-report.json"], paths["evidence-report.html"]

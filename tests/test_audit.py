@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from evidence_office.audit import audit_package
+from evidence_office.model import SCHEMA_VERSION
 from evidence_office.report import render_html
 from evidence_office.validator import load_manifest
 from evidence_office.workflow import create_workspace, intake_sources
@@ -61,6 +62,20 @@ class AuditBehaviourTests(unittest.TestCase):
             source_index["schema_version"] = "0.3"
             source_index["sources"][0]["path"] = "./sources/../sources/results.csv"
             (dist / "source-index.json").write_text(json.dumps(source_index), encoding="utf-8")
+            (dist / "package-index.json").unlink()
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "passed")
+
+    def test_v06_package_without_checksum_index_remains_auditable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            source_index_path = dist / "source-index.json"
+            source_index = json.loads(source_index_path.read_text(encoding="utf-8"))
+            source_index["schema_version"] = "0.6"
+            source_index_path.write_text(json.dumps(source_index), encoding="utf-8")
+            (dist / "package-index.json").unlink()
 
             result = audit_package(load_manifest(manifest_path), workspace, dist)
 
@@ -78,6 +93,26 @@ class AuditBehaviourTests(unittest.TestCase):
             self.assertEqual(result.status, "failed")
             self.assertIn("SOURCE_DRIFTED", {issue.code for issue in result.errors})
 
+    def test_tampered_generated_report_fails_package_integrity_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            (dist / "evidence-map.md").write_text("tampered review map\n", encoding="utf-8")
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("PACKAGE_FILE_DRIFTED", {issue.code for issue in result.errors})
+
+    def test_missing_generated_report_fails_package_integrity_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            (dist / "evidence-report.html").unlink()
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("PACKAGE_FILE_MISSING", {issue.code for issue in result.errors})
+
     def test_invalid_baseline_fails_without_inventing_current_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace, manifest_path, dist = self._built_workspace(directory)
@@ -89,13 +124,59 @@ class AuditBehaviourTests(unittest.TestCase):
             self.assertIn("AUDIT_BASELINE_INVALID", {issue.code for issue in result.errors})
             self.assertEqual(result.current_sources[0].path, "sources/results.csv")
 
+    def test_duplicate_baseline_keys_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            source_index_path = dist / "source-index.json"
+            content = source_index_path.read_text(encoding="utf-8")
+            content = content.replace(
+                f'"schema_version": "{SCHEMA_VERSION}"',
+                f'"schema_version": "999",\n  "schema_version": "{SCHEMA_VERSION}"',
+                1,
+            )
+            source_index_path.write_text(content, encoding="utf-8")
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("AUDIT_BASELINE_INVALID", {issue.code for issue in result.errors})
+
+    def test_legacy_source_index_rejects_unknown_fields_and_duplicate_anchors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            source_index_path = dist / "source-index.json"
+            source_index = json.loads(source_index_path.read_text(encoding="utf-8"))
+            source_index["schema_version"] = "0.3"
+            source_index["sources"][0]["unexpected"] = True
+            source_index["sources"][0]["anchors"].append(source_index["sources"][0]["anchors"][0])
+            source_index_path.write_text(json.dumps(source_index), encoding="utf-8")
+            (dist / "package-index.json").unlink()
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("AUDIT_BASELINE_INVALID", {issue.code for issue in result.errors})
+
+    def test_package_index_rejects_unknown_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            package_index_path = dist / "package-index.json"
+            package_index = json.loads(package_index_path.read_text(encoding="utf-8"))
+            package_index["trusted"] = True
+            package_index_path.write_text(json.dumps(package_index), encoding="utf-8")
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("AUDIT_BASELINE_INVALID", {issue.code for issue in result.errors})
+
     def test_deeply_nested_baseline_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace, manifest_path, dist = self._built_workspace(directory)
             (dist / "manifest.snapshot.json").write_text("[]", encoding="utf-8")
             manifest = load_manifest(manifest_path)
 
-            with mock.patch("evidence_office.audit.json.loads", side_effect=RecursionError("too deep")):
+            with mock.patch("evidence_office.storage.json.loads", side_effect=RecursionError("too deep")):
                 result = audit_package(manifest, workspace, dist)
 
             self.assertEqual(result.status, "failed")

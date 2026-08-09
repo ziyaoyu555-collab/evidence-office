@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Callable
@@ -11,9 +10,10 @@ from typing import Callable
 from . import __version__
 from .audit import audit_package
 from .demo import create_demo
-from .model import ValidationReport
-from .report import render_html, render_json, render_text, write_package
+from .model import ProjectManifest, ValidationReport, anchor_sort_key
+from .report import PACKAGE_FILES, render_html, render_json, render_text, safe_line, write_package
 from .source_index import index_file
+from .storage import json_text, write_text_atomic
 from .validator import load_manifest, validate_manifest
 from .workflow import add_claim, create_workspace, intake_sources
 
@@ -22,11 +22,28 @@ def _root_for(manifest_path: Path, explicit: Path | None) -> Path:
     return (explicit or manifest_path.parent).resolve()
 
 
+def _manifest_inputs(manifest_path: Path, manifest: ProjectManifest, root: Path) -> list[Path]:
+    inputs = [manifest_path]
+    for source in manifest.sources:
+        if source.path:
+            try:
+                inputs.append((root / source.path).resolve())
+            except (OSError, ValueError):
+                pass
+    return inputs
+
+
+def _protect_outputs(outputs: list[Path], inputs: list[Path]) -> None:
+    protected = {path.resolve() for path in inputs}
+    for output in outputs:
+        resolved = output.resolve()
+        if resolved in protected:
+            raise ValueError(f"Output matches a protected input; refusing to overwrite input: {resolved}")
+
+
 def _write_or_print(content: str, out: Path | None) -> None:
     if out:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(content, encoding="utf-8")
-        print(out.resolve())
+        print(write_text_atomic(out.resolve(), content))
     else:
         print(content, end="")
 
@@ -52,15 +69,23 @@ def _add_report_options(parser: argparse.ArgumentParser) -> None:
 def _validate_command(args: argparse.Namespace) -> int:
     manifest_path = args.manifest.resolve()
     manifest = load_manifest(manifest_path)
-    report = validate_manifest(manifest, _root_for(manifest_path, args.root))
+    root = _root_for(manifest_path, args.root)
+    _protect_outputs([args.out] if args.out else [], _manifest_inputs(manifest_path, manifest, root))
+    report = validate_manifest(manifest, root)
     return _emit_report(report, args.format, args.out, args.strict)
 
 
 def _build_command(args: argparse.Namespace) -> int:
     manifest_path = args.manifest.resolve()
     manifest = load_manifest(manifest_path)
-    report = validate_manifest(manifest, _root_for(manifest_path, args.root))
-    json_path, html_path = write_package(report, manifest, args.out.resolve())
+    root = _root_for(manifest_path, args.root)
+    out_dir = args.out.resolve()
+    _protect_outputs(
+        [out_dir / name for name in PACKAGE_FILES],
+        _manifest_inputs(manifest_path, manifest, root),
+    )
+    report = validate_manifest(manifest, root)
+    json_path, html_path = write_package(report, manifest, out_dir)
     print(f"JSON: {json_path}")
     print(f"HTML: {html_path}")
     print(f"Status: {report.status}")
@@ -70,23 +95,35 @@ def _build_command(args: argparse.Namespace) -> int:
 def _inspect_command(args: argparse.Namespace) -> int:
     snapshot = index_file(args.root.resolve(), args.path)
     if snapshot is None:
-        print(f"Source does not exist: {args.path}", file=sys.stderr)
+        print(f"Source does not exist: {safe_line(args.path)}", file=sys.stderr)
         return 1
-    print(json.dumps({
+    status = (
+        "changed_during_index"
+        if snapshot.metadata.get("integrity") == "changed"
+        else "parse_unavailable"
+        if snapshot.metadata.get("parse") == "unavailable"
+        else "indexed"
+    )
+    print(json_text({
+        "status": status,
         "path": snapshot.path,
         "kind": snapshot.kind,
         "sha256": snapshot.sha256,
         "size_bytes": snapshot.size_bytes,
-        "anchors": sorted(snapshot.anchors),
+        "anchors": sorted(snapshot.anchors, key=anchor_sort_key),
         "metadata": dict(snapshot.metadata),
-    }, ensure_ascii=False, indent=2))
-    return 0
+    }), end="")
+    return 0 if status == "indexed" else 1
 
 
 def _audit_command(args: argparse.Namespace) -> int:
     manifest_path = args.manifest.resolve()
     manifest = load_manifest(manifest_path)
-    report = audit_package(manifest, _root_for(manifest_path, args.root), args.package)
+    root = _root_for(manifest_path, args.root)
+    protected = _manifest_inputs(manifest_path, manifest, root)
+    protected.extend(args.package.resolve() / name for name in PACKAGE_FILES)
+    _protect_outputs([args.out] if args.out else [], protected)
+    report = audit_package(manifest, root, args.package)
     return _emit_report(report, args.format, args.out, args.strict)
 
 
@@ -187,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.handler(args))
     except (OSError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {safe_line(exc)}", file=sys.stderr)
         return 2
 
 

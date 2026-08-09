@@ -14,8 +14,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 The core intentionally uses the Python standard library. Do not add a runtime dependency just to make a parser convenient; explain the tradeoff and add a fixture first.
 
 Before release, build and install the wheel in a clean environment and run the
-installed `evidence-office` command. CI repeats that check on Python 3.10, 3.12,
-and 3.14, then exercises demo → build → audit without relying on `PYTHONPATH`.
+installed `evidence-office` command. CI repeats that check on Linux with Python
+3.10, 3.12, and 3.14, plus Python 3.12 on Windows, then exercises demo → build
+→ audit without relying on `PYTHONPATH`.
 
 ## Pull requests
 

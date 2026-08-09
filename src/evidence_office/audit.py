@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-import json
+import hashlib
 import re
 from pathlib import Path
 from typing import Any, Mapping
 
 from .model import AuditReport, Issue, ProjectManifest, SCHEMA_VERSION, SourceSnapshot, SourceSpec
+from .report import PACKAGE_CONTENT_FILES
+from .storage import read_json
 from .validator import validate_manifest
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_SUPPORTED_SOURCE_INDEX_SCHEMAS = frozenset({"0.3", SCHEMA_VERSION})
+_SUPPORTED_SOURCE_INDEX_SCHEMAS = frozenset({"0.3", "0.6", SCHEMA_VERSION})
 
 
 def _baseline_error(path: Path, message: str) -> Issue:
@@ -21,13 +23,15 @@ def _baseline_error(path: Path, message: str) -> Issue:
 
 def _read_json(path: Path) -> tuple[Any | None, list[Issue]]:
     try:
-        return json.loads(path.read_text(encoding="utf-8")), []
-    except (OSError, UnicodeError, RecursionError, json.JSONDecodeError) as exc:
+        return read_json(path), []
+    except (OSError, UnicodeError, ValueError) as exc:
         return None, [_baseline_error(path, f"Could not read baseline: {exc}")]
 
 
 def _baseline_source(raw: Any) -> SourceSnapshot | None:
     if not isinstance(raw, Mapping):
+        return None
+    if set(raw) - {"path", "kind", "sha256", "size_bytes", "anchors", "metadata"}:
         return None
     path = raw.get("path")
     kind = raw.get("kind")
@@ -46,6 +50,7 @@ def _baseline_source(raw: Any) -> SourceSnapshot | None:
         or size_bytes < 0
         or not isinstance(anchors, list)
         or not all(isinstance(anchor, str) for anchor in anchors)
+        or len(anchors) != len(set(anchors))
         or not isinstance(metadata, Mapping)
     ):
         return None
@@ -63,15 +68,20 @@ def _baseline_source(raw: Any) -> SourceSnapshot | None:
     )
 
 
-def _load_baseline(package_dir: Path) -> tuple[tuple[SourceSnapshot, ...], list[Issue]]:
+def _load_baseline(package_dir: Path) -> tuple[tuple[SourceSnapshot, ...], list[Issue], str | None]:
     path = package_dir / "source-index.json"
     raw, read_issues = _read_json(path)
     if read_issues:
-        return (), read_issues
-    if not isinstance(raw, Mapping) or not isinstance(raw.get("sources"), list):
-        return (), [_baseline_error(path, "Source index must contain a sources array.")]
-    if raw.get("schema_version") not in _SUPPORTED_SOURCE_INDEX_SCHEMAS:
-        return (), [_baseline_error(path, f"Unsupported source-index schema: {raw.get('schema_version')!r}.")]
+        return (), read_issues, None
+    if (
+        not isinstance(raw, Mapping)
+        or set(raw) != {"schema_version", "sources"}
+        or not isinstance(raw.get("sources"), list)
+    ):
+        return (), [_baseline_error(path, "Source index must contain a sources array.")], None
+    schema = raw.get("schema_version")
+    if not isinstance(schema, str) or schema not in _SUPPORTED_SOURCE_INDEX_SCHEMAS:
+        return (), [_baseline_error(path, f"Unsupported source-index schema: {schema!r}.")], None
 
     snapshots: list[SourceSnapshot] = []
     issues: list[Issue] = []
@@ -86,7 +96,50 @@ def _load_baseline(package_dir: Path) -> tuple[tuple[SourceSnapshot, ...], list[
             continue
         seen.add(snapshot.path)
         snapshots.append(snapshot)
-    return tuple(snapshots), issues
+    return tuple(snapshots), issues, schema
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _package_integrity_issues(package_dir: Path, source_schema: str | None) -> list[Issue]:
+    index_path = package_dir / "package-index.json"
+    if not index_path.exists() and source_schema != SCHEMA_VERSION:
+        return []
+    raw, read_issues = _read_json(index_path)
+    if read_issues:
+        return read_issues
+    expected_names = set(PACKAGE_CONTENT_FILES)
+    if (
+        not isinstance(raw, Mapping)
+        or set(raw) != {"schema_version", "algorithm", "files"}
+        or raw.get("schema_version") != SCHEMA_VERSION
+        or raw.get("algorithm") != "sha256"
+        or not isinstance(raw.get("files"), Mapping)
+        or set(raw["files"]) != expected_names
+        or not all(isinstance(value, str) and _SHA256_RE.fullmatch(value) for value in raw["files"].values())
+    ):
+        return [_baseline_error(index_path, "Package index has an invalid schema or file inventory.")]
+
+    issues: list[Issue] = []
+    for name in PACKAGE_CONTENT_FILES:
+        path = package_dir / name
+        if not path.is_file():
+            issues.append(Issue("error", "PACKAGE_FILE_MISSING", "Generated package file is missing.", path=str(path)))
+            continue
+        try:
+            actual = _file_sha256(path)
+        except OSError as exc:
+            issues.append(Issue("error", "PACKAGE_FILE_UNREADABLE", f"Generated package file could not be read: {exc}", path=str(path)))
+            continue
+        if actual != raw["files"][name]:
+            issues.append(Issue("error", "PACKAGE_FILE_DRIFTED", "Generated package file changed after the build.", path=str(path)))
+    return issues
 
 
 def _load_manifest_baseline(package_dir: Path) -> tuple[dict[str, object] | None, list[Issue]]:
@@ -139,11 +192,12 @@ def audit_package(manifest: ProjectManifest, root: Path, package_dir: Path) -> A
     root = root.resolve()
     package_dir = package_dir.resolve()
     validation = validate_manifest(manifest, root)
-    baseline, source_baseline_issues = _load_baseline(package_dir)
+    baseline, source_baseline_issues, source_schema = _load_baseline(package_dir)
     manifest_baseline, manifest_baseline_issues = _load_manifest_baseline(package_dir)
     issues = list(validation.issues)
     issues.extend(source_baseline_issues)
     issues.extend(manifest_baseline_issues)
+    issues.extend(_package_integrity_issues(package_dir, source_schema))
     if not source_baseline_issues:
         issues.extend(_drift_issues(baseline, validation.sources))
     if not manifest_baseline_issues and manifest_baseline != manifest.to_mapping():
