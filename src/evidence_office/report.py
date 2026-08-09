@@ -208,12 +208,13 @@ def render_html(report: Report) -> str:
         "</tr>"
         for source in data["sources"]
     )
+    empty_evidence = '<span class="muted">none</span>'
     claim_rows = "".join(
         "<tr>"
         f"<td><code>{html.escape(claim['id'])}</code></td>"
         f"<td><span class='badge claim-{html.escape(claim['status'])}'>{html.escape(claim['status'])}</span></td>"
         f"<td>{html.escape(claim['statement'])}</td>"
-        f"<td>{'<br>'.join(_html_reference(ref) for ref in claim['sources']) or '<span class=\"muted\">none</span>'}</td>"
+        f"<td>{'<br>'.join(_html_reference(ref) for ref in claim['sources']) or empty_evidence}</td>"
         f"<td>{html.escape(claim['note'] or '')}</td>"
         "</tr>"
         for claim in data["claims"]
