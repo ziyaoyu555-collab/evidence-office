@@ -116,6 +116,7 @@ class ValidationReport:
     status: str
     issues: tuple[Issue, ...]
     sources: tuple[SourceSnapshot, ...]
+    claims: tuple[Claim, ...]
     claims_checked: int
 
     @property
@@ -125,4 +126,3 @@ class ValidationReport:
     @property
     def warnings(self) -> tuple[Issue, ...]:
         return tuple(issue for issue in self.issues if issue.severity == "warning")
-

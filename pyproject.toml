@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evidence-office"
-version = "0.1.0"
+version = "0.2.0"
 description = "Evidence-linked validation and reporting for engineering Office deliverables."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,4 +27,3 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-

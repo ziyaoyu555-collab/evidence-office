@@ -10,6 +10,15 @@ from evidence_office.cli import main
 
 
 class CliBehaviourTests(unittest.TestCase):
+    def test_version_flag_is_available(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            with self.assertRaises(SystemExit) as raised:
+                main(["--version"])
+
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn("evidence-office 0.2.0", stdout.getvalue())
+
     def test_build_writes_machine_and_human_reports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

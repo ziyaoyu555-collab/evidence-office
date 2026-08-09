@@ -14,11 +14,24 @@ from .model import ProjectManifest, ValidationReport
 
 def report_to_dict(report: ValidationReport) -> dict[str, Any]:
     return {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
         "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "project": report.project,
         "status": report.status,
         "claims_checked": report.claims_checked,
+        "claims": [
+            {
+                "id": claim.id,
+                "statement": claim.statement,
+                "status": claim.status,
+                "note": claim.note,
+                "sources": [
+                    {"path": ref.path, "anchor": ref.anchor, "note": ref.note}
+                    for ref in claim.sources
+                ],
+            }
+            for claim in report.claims
+        ],
         "summary": {
             "errors": len(report.errors),
             "warnings": len(report.warnings),
@@ -64,6 +77,14 @@ def render_text(report: ValidationReport) -> str:
             lines.append(f"- [{issue.severity}] {issue.code}:{location} {issue.message}")
     else:
         lines.append("No issues.")
+    if report.claims:
+        lines.append("Claims:")
+        for claim in report.claims:
+            references = ", ".join(
+                f"{ref.path}#{ref.anchor}" if ref.anchor else ref.path
+                for ref in claim.sources
+            ) or "(no evidence references)"
+            lines.append(f"- [{claim.status}] {claim.id}: {claim.statement} — {references}")
     return "\n".join(lines) + "\n"
 
 
@@ -90,6 +111,15 @@ def render_html(report: ValidationReport) -> str:
         "</tr>"
         for source in data["sources"]
     )
+    claim_rows = "".join(
+        "<tr>"
+        f"<td><code>{html.escape(claim['id'])}</code></td>"
+        f"<td><span class='badge claim-{html.escape(claim['status'])}'>{html.escape(claim['status'])}</span></td>"
+        f"<td>{html.escape(claim['statement'])}</td>"
+        f"<td>{'<br>'.join('<code>' + html.escape(ref['path']) + ('#' + html.escape(ref['anchor']) if ref['anchor'] else '') + '</code>' for ref in claim['sources']) or '<span class=\"muted\">none</span>'}</td>"
+        "</tr>"
+        for claim in data["claims"]
+    )
     issues_block = (
         "<p class='muted'>No issues. Every checked rule passed.</p>"
         if not report.issues
@@ -104,14 +134,15 @@ def render_html(report: ValidationReport) -> str:
 main {{ max-width:1120px; margin:0 auto; padding:48px 24px 72px; }} h1 {{ margin:0 0 8px; font-size:34px; }} h2 {{ margin:36px 0 14px; font-size:20px; }} .muted {{ color:var(--muted); }}
 .hero {{ display:flex; gap:16px; align-items:center; justify-content:space-between; margin-bottom:28px; }} .status {{ border:1px solid var(--line); border-radius:999px; padding:8px 14px; font-weight:700; }} .status.ok {{ color:var(--ok); }} .status.warn {{ color:var(--warn); }} .status.fail {{ color:var(--fail); }}
 .cards {{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }} .card {{ background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; }} .card b {{ display:block; font-size:26px; }} .card span {{ color:var(--muted); }}
-table {{ width:100%; border-collapse:collapse; overflow:hidden; background:var(--panel); border:1px solid var(--line); border-radius:14px; }} th,td {{ padding:11px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }} th {{ color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }} tr:last-child td {{ border-bottom:0; }} code {{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#c5d4ff; }} .badge {{ display:inline-block; border-radius:999px; padding:2px 8px; font-size:12px; font-weight:700; }} .badge.error {{ color:#24090d; background:var(--fail); }} .badge.warning {{ color:#2a2005; background:var(--warn); }} .badge.info {{ color:#06291b; background:var(--ok); }}
+table {{ width:100%; border-collapse:collapse; overflow:hidden; background:var(--panel); border:1px solid var(--line); border-radius:14px; }} th,td {{ padding:11px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }} th {{ color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }} tr:last-child td {{ border-bottom:0; }} code {{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#c5d4ff; }} .badge {{ display:inline-block; border-radius:999px; padding:2px 8px; font-size:12px; font-weight:700; }} .badge.error, .badge.claim-verified {{ color:#24090d; background:var(--fail); }} .badge.warning, .badge.claim-assumption, .badge.claim-unverified {{ color:#2a2005; background:var(--warn); }} .badge.info {{ color:#06291b; background:var(--ok); }}
 @media(max-width:720px) {{ .hero {{ align-items:flex-start; flex-direction:column; }} .cards {{ grid-template-columns:repeat(2,1fr); }} table {{ display:block; overflow:auto; white-space:nowrap; }} }}
 </style></head><body><main>
 <div class="hero"><div><h1>Evidence report</h1><div class="muted">{html.escape(report.project or 'Unnamed project')}</div></div><div class="status {status_class}">{html.escape(report.status)}</div></div>
 <section class="cards"><div class="card"><b>{report.claims_checked}</b><span>claims checked</span></div><div class="card"><b>{len(report.sources)}</b><span>sources indexed</span></div><div class="card"><b>{len(report.errors)}</b><span>blocking errors</span></div><div class="card"><b>{len(report.warnings)}</b><span>review warnings</span></div></section>
+<h2>Claim ledger</h2><table><thead><tr><th>ID</th><th>Status</th><th>Statement</th><th>Evidence</th></tr></thead><tbody>{claim_rows or '<tr><td colspan="4" class="muted">No claims declared.</td></tr>'}</tbody></table>
 <h2>Issues</h2>{issues_block}
 <h2>Source fingerprints</h2><table><thead><tr><th>Path</th><th>Kind</th><th>Bytes</th><th>SHA-256</th><th>Anchors</th></tr></thead><tbody>{source_rows or '<tr><td colspan="5" class="muted">No existing declared sources.</td></tr>'}</tbody></table>
-<p class="muted" style="margin-top:28px">Generated by evidence-office 0.1.0. A passed report means only that the deterministic checks in this version passed; it is not a substitute for domain review.</p>
+<p class="muted" style="margin-top:28px">Generated by evidence-office 0.2.0. A passed report means only that the deterministic checks in this version passed; it is not a substitute for domain review.</p>
 </main></body></html>\n"""
 
 
@@ -124,4 +155,3 @@ def write_package(report: ValidationReport, manifest: ProjectManifest, out_dir: 
     if manifest.manifest_path and manifest.manifest_path.is_file():
         (out_dir / "manifest.snapshot.json").write_bytes(manifest.manifest_path.read_bytes())
     return json_path, html_path
-

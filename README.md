@@ -8,6 +8,8 @@ It answers a question that ordinary AI document tools usually leave implicit:
 
 The first release does not pretend to replace a domain expert. It creates a deterministic evidence manifest, indexes declared CSV/JSON/text/DOCX/XLSX/PPTX sources, checks claim-to-source links, and writes both a machine-readable JSON report and a standalone HTML report.
 
+The report includes a claim ledger, so a reviewer can read every statement and its exact evidence references without reopening the manifest.
+
 ## Why this exists
 
 Generic AI presentation generation is already crowded. Evidence Office focuses on the harder and more useful layer between engineering material and final delivery:
@@ -90,6 +92,8 @@ Common anchors:
 | JSON | `key:metrics`, `item:2` |
 | Markdown/text | `line:12` |
 
+For a `verified` claim, a generic file-level anchor such as `file` is intentionally rejected. It proves only that a file exists, not where the claim is supported.
+
 ## Commands
 
 ```bash
@@ -145,4 +149,3 @@ The core deliberately has no LLM dependency. AI-assisted manifest authoring can 
 ## Contributing
 
 Please read [AGENTS.md](AGENTS.md) before changing validation rules. New behaviour needs a public-interface test and must preserve the fail-closed rules. See [CONTRIBUTING.md](CONTRIBUTING.md).
-

@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import __version__
 from .demo import create_demo
 from .report import render_html, render_json, render_text, write_package
 from .source_index import index_file
@@ -69,6 +70,7 @@ def _inspect_command(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="evidence-office", description="Validate evidence-linked engineering deliverables.")
+    parser.add_argument("--version", action="version", version=f"evidence-office {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     validate = subparsers.add_parser("validate", help="Validate a JSON manifest and print a report.")

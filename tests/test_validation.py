@@ -5,6 +5,7 @@ import zipfile
 from pathlib import Path
 
 from evidence_office.model import ProjectManifest
+from evidence_office.report import render_html, report_to_dict
 from evidence_office.validator import validate_manifest
 
 
@@ -33,6 +34,33 @@ class ValidationBehaviourTests(unittest.TestCase):
 
             self.assertEqual(report.status, "passed")
             self.assertEqual(report.errors, ())
+
+            payload = report_to_dict(report)
+            self.assertEqual(payload["claims"][0]["id"], "C-001")
+            self.assertEqual(payload["claims"][0]["sources"][0]["anchor"], "row:1/field:value")
+            html = render_html(report)
+            self.assertIn("Efficiency is 0.91.", html)
+            self.assertIn("row:1/field:value", html)
+
+    def test_verified_claim_cannot_use_only_a_file_level_anchor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "notes.txt").write_text("A result exists.\n", encoding="utf-8")
+            manifest = ProjectManifest.from_mapping({
+                "project": "Generic anchor demo",
+                "sources": [{"path": "notes.txt"}],
+                "claims": [{
+                    "id": "C-001",
+                    "statement": "The result is verified.",
+                    "status": "verified",
+                    "sources": [{"path": "notes.txt", "anchor": "file"}],
+                }],
+            })
+
+            report = validate_manifest(manifest, root)
+
+            self.assertEqual(report.status, "failed")
+            self.assertIn("VERIFIED_EVIDENCE_ANCHOR_NOT_PRECISE", {issue.code for issue in report.errors})
 
     def test_missing_declared_source_is_a_blocking_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

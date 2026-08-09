@@ -36,6 +36,10 @@ def _add_claim_issue(issues: list[Issue], severity: str, code: str, message: str
     issues.append(Issue(severity, code, message, claim_id=claim.id or None, **kwargs))
 
 
+def _is_generic_anchor(anchor: str) -> bool:
+    return anchor == "file" or anchor.startswith("file:")
+
+
 def validate_manifest(manifest: ProjectManifest, root: Path) -> ValidationReport:
     root = root.resolve()
     issues: list[Issue] = []
@@ -96,6 +100,8 @@ def validate_manifest(manifest: ProjectManifest, root: Path) -> ValidationReport
                 continue
             if claim.status == "verified" and not ref.anchor:
                 _add_claim_issue(issues, "error", "VERIFIED_EVIDENCE_ANCHOR_MISSING", "A verified evidence reference must include a precise anchor.", claim, path=ref.path)
+            elif claim.status == "verified" and ref.anchor and _is_generic_anchor(ref.anchor):
+                _add_claim_issue(issues, "error", "VERIFIED_EVIDENCE_ANCHOR_NOT_PRECISE", "A verified claim cannot rely only on a file-level anchor; cite a paragraph, row, cell, slide, or line.", claim, path=ref.path, anchor=ref.anchor)
             elif ref.anchor and ref.anchor not in snapshot.anchors:
                 _add_claim_issue(issues, "error", "EVIDENCE_ANCHOR_NOT_FOUND", f"Evidence anchor was not found in {ref.path}: {ref.anchor}", claim, path=ref.path, anchor=ref.anchor)
 
@@ -105,4 +111,4 @@ def validate_manifest(manifest: ProjectManifest, root: Path) -> ValidationReport
         status = "passed_with_warnings"
     else:
         status = "passed"
-    return ValidationReport(manifest.project, status, tuple(issues), snapshots, len(manifest.claims))
+    return ValidationReport(manifest.project, status, tuple(issues), snapshots, manifest.claims, len(manifest.claims))
