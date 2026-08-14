@@ -31,7 +31,7 @@ _MAX_SOURCE_ANCHORS = 250_000
 _MAX_ANCHOR_CHARS = 4096
 _MAX_VALUE_ANCHOR_CHARS = 512
 _MAX_TEXT_SOURCE_BYTES = 64 * 1024 * 1024
-_TEXT_SOURCE_SUFFIXES = frozenset({".csv", ".json", ".md", ".txt", ".m"})
+_TEXT_SOURCE_SUFFIXES = frozenset({".csv", ".ipynb", ".json", ".md", ".py", ".txt", ".m"})
 
 
 class _SourceLimitError(ValueError):
@@ -470,9 +470,11 @@ def _slx_anchors(path: Path) -> tuple[set[str], dict[str, object]]:
 _SOURCE_INDEXERS = {
     ".csv": _csv_anchors,
     ".json": _json_anchors,
+    ".ipynb": _json_anchors,
     ".md": _text_anchors,
     ".txt": _text_anchors,
     ".m": _text_anchors,
+    ".py": _text_anchors,
     ".docx": _docx_anchors,
     ".docm": _docx_anchors,
     ".pptx": _pptx_anchors,

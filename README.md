@@ -136,6 +136,66 @@ The manifest schema is intentionally strict: array entries must be objects and
 unknown fields are rejected instead of being silently discarded during a
 workflow command.
 
+### v0.9 delivery checks
+
+The optional `checks` and `submission` sections turn the manifest into a
+project-specific acceptance contract while keeping the engine generic. The
+project supplies its own authoritative paths, regexes, expected values, and
+runtime boundary; Evidence Office only applies the same deterministic rules to
+each project.
+
+```json
+{
+  "sources": [
+    {"path": "submission.zip"},
+    {"path": "src/calculation.py"},
+    {"path": "src/calculation.ipynb"},
+    {"path": "report.md"},
+    {"path": "results.txt"}
+  ],
+  "submission": {
+    "path": "submission.zip",
+    "sha256": "<64 lowercase hexadecimal characters>",
+    "required_members": ["submission/src/calculation.py"],
+    "single_root": true
+  },
+  "checks": {
+    "content": [{
+      "id": "no-failure-output",
+      "sources": ["results.txt", "src/calculation.ipynb"],
+      "patterns": ["Need revise", "TODO", "safety factor\\s*[=:]\\s*0\\."],
+      "mode": "none",
+      "severity": "error"
+    }],
+    "consistency": [{
+      "id": "authoritative-mass",
+      "expected": 18000,
+      "tolerance": 0,
+      "values": [
+        {"path": "src/calculation.py", "pattern": "mass_kg\\s*=\\s*(\\d+(?:\\.\\d+)?)"},
+        {"path": "src/calculation.ipynb", "pattern": "mass_kg\\s*=\\s*(\\d+(?:\\.\\d+)?)"},
+        {"path": "report.md", "pattern": "Full mass:\\s*(\\d+(?:\\.\\d+)?)"}
+      ]
+    }],
+    "runtime": [{
+      "id": "matlab-dynamic-run",
+      "sources": ["model.slx"],
+      "status": "not_verified",
+      "severity": "warning",
+      "note": "Static structure was inspected; MATLAB execution remains a separate gate."
+    }]
+  }
+}
+```
+
+Content patterns are regular expressions. `mode: "none"` is useful for
+blocking stale failure output; `all` requires every pattern and `any` requires
+at least one. Consistency probes must produce exactly one captured value per
+source, then compare all values with the declared baseline and tolerance. A
+Notebook is indexed as JSON and searchable as source, but it is never silently
+treated as executed. Set runtime checks to `severity: "error"` when a project
+requires a separately verified runtime result before delivery.
+
 Common anchors:
 
 | Source | Anchor examples |
@@ -209,6 +269,13 @@ manifest JSON changes do not create false drift. An
 audit failure is a delivery gate for a stale package, not a program crash. The
 command also preserves validation warnings; add `--strict` when those warnings
 must block delivery.
+
+When `submission` is configured, `validate` and `build` also check the actual
+archive fingerprint and structure. The archive itself must be listed in
+`sources`; this makes its identity part of the same source snapshot used by
+`audit`. Evidence Office does not extract or execute an archive during
+validation, so a review workspace should contain the unpacked source files as
+declared sources as well.
 
 ## Safety and honest limits
 

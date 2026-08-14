@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.0 — 2026-08-14
+
+- add manifest-configured submission archive identity and structure checks, including SHA-256, ZIP CRC integrity, required members, and optional single-root validation;
+- add generic content gates for required or forbidden regex patterns across declared reports, code, notebooks, and other text-readable evidence;
+- add generic cross-artifact consistency probes that extract one value per source and compare it with an optional project baseline and tolerance;
+- index Python and Jupyter Notebook sources as first-class evidence instead of treating them as file-only attachments;
+- add explicit runtime boundary checks so static inspection cannot be reported as dynamic execution, with configurable warning or blocking severity;
+- preserve v0.8 source/package audit compatibility and the existing manifest workflow when no new checks are configured;
+- add regression coverage for archive identity, content failures, Notebook indexing, cross-file mismatch, and unverified runtime boundaries.
+
 ## 0.8.0 — 2026-08-09
 
 - add bounded, read-only SLX package indexing with system, block SID, block type, and percent-encoded block-path anchors;
