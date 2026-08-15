@@ -7,6 +7,7 @@ course, vehicle, or CAD project has a particular correct number.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import zipfile
 from decimal import Decimal, InvalidOperation
@@ -16,6 +17,7 @@ from xml.etree import ElementTree
 from .model import (
     Issue,
     ProjectManifest,
+    ResolvedArtifact,
     SourceSnapshot,
     ValueProbe,
 )
@@ -80,8 +82,15 @@ def _severity(rule_severity: str, default: str = "error") -> str:
     return rule_severity if rule_severity in {"error", "warning"} else default
 
 
-def _issue(rule_id: str, severity: str, code: str, message: str, path: str | None = None) -> Issue:
-    return Issue(severity, code, f"[{rule_id}] {message}", path=path)
+def _issue(
+    rule_id: str,
+    severity: str,
+    code: str,
+    message: str,
+    path: str | None = None,
+    anchor: str | None = None,
+) -> Issue:
+    return Issue(severity, code, f"[{rule_id}] {message}", path=path, anchor=anchor)
 
 
 def _content_checks(manifest: ProjectManifest, root: Path) -> list[Issue]:
@@ -237,16 +246,38 @@ def run_review_checks(manifest: ProjectManifest, root: Path) -> tuple[Issue, ...
     return tuple(_content_checks(manifest, root) + _consistency_checks(manifest, root) + _runtime_checks(manifest))
 
 
-def validate_submission(manifest: ProjectManifest, root: Path, snapshots: tuple[SourceSnapshot, ...]) -> tuple[Issue, ...]:
-    """Validate the identity and safe structure of an optional submitted ZIP."""
+def _member_sha256(archive: zipfile.ZipFile, member: str) -> str:
+    digest = hashlib.sha256()
+    with archive.open(member) as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def inspect_submission(
+    manifest: ProjectManifest,
+    root: Path,
+    snapshots: tuple[SourceSnapshot, ...],
+) -> tuple[tuple[Issue, ...], tuple[ResolvedArtifact, ...]]:
+    """Validate a submitted ZIP and resolve validated sources to final members.
+
+    The archive is the delivery boundary.  A consistency check over unpacked
+    workspace sources is not enough if the final ZIP contains a stale copy, so
+    every configured final artifact is located and compared byte-for-byte with
+    the source that was actually checked.
+    """
 
     submission = manifest.submission
     if submission is None:
-        return ()
+        return (), ()
     snapshot = next((item for item in snapshots if item.path == submission.path), None)
     if snapshot is None:
-        return (_issue("submission", "error", "SUBMISSION_SOURCE_MISSING", f"Submission archive is not a declared readable source: {submission.path}", submission.path),)
+        return (
+            (_issue("submission", "error", "SUBMISSION_SOURCE_MISSING", f"Submission archive is not a declared readable source: {submission.path}", submission.path),),
+            (),
+        )
     issues: list[Issue] = []
+    resolved_artifacts: list[ResolvedArtifact] = []
     if submission.sha256 and not _SHA256_RE.fullmatch(submission.sha256):
         issues.append(_issue("submission", "error", "SUBMISSION_SHA256_INVALID", "Configured SHA-256 must contain exactly 64 hexadecimal characters.", submission.path))
     elif submission.sha256 and snapshot.sha256.lower() != submission.sha256.lower():
@@ -273,6 +304,75 @@ def validate_submission(manifest: ProjectManifest, root: Path, snapshots: tuple[
                 roots = {name.split("/", 1)[0] for name in names if name and not name.startswith("/")}
                 if len(roots) != 1:
                     issues.append(_issue("submission", "error", "SUBMISSION_ROOT_AMBIGUOUS", f"Expected one archive root directory; found {sorted(roots)!r}.", submission.path))
+
+            declared = {source.path for source in manifest.sources}
+            snapshots_by_path = {item.path: item for item in snapshots}
+            seen_artifact_ids: set[str] = set()
+            for artifact in submission.artifacts:
+                if not artifact.id:
+                    issues.append(_issue("submission", "error", "SUBMISSION_ARTIFACT_ID_MISSING", "Final artifact id must not be empty.", submission.path))
+                    continue
+                if artifact.id in seen_artifact_ids:
+                    issues.append(_issue("submission", "error", "SUBMISSION_ARTIFACT_ID_DUPLICATE", f"Final artifact id is duplicated: {artifact.id}.", submission.path))
+                    continue
+                seen_artifact_ids.add(artifact.id)
+                if artifact.source not in declared:
+                    issues.append(_issue("submission", "error", "SUBMISSION_ARTIFACT_SOURCE_UNDECLARED", f"Final artifact source is not declared: {artifact.source}.", artifact.source))
+                    continue
+                if artifact.source == submission.path:
+                    issues.append(_issue("submission", "error", "SUBMISSION_ARTIFACT_SOURCE_IS_ARCHIVE", "A final artifact source cannot be the submission archive itself.", artifact.source))
+                    continue
+                if not artifact.member_pattern:
+                    issues.append(_issue("submission", "error", "SUBMISSION_ARTIFACT_PATTERN_EMPTY", f"Final artifact pattern is empty: {artifact.id}.", submission.path))
+                    continue
+                try:
+                    expression = re.compile(artifact.member_pattern)
+                except re.error as exc:
+                    issues.append(_issue("submission", "error", "SUBMISSION_ARTIFACT_PATTERN_INVALID", f"Invalid final artifact pattern for {artifact.id}: {exc}.", submission.path))
+                    continue
+                matches = [name for name in names if name and not name.endswith("/") and expression.search(name)]
+                severity = "error" if artifact.required else "warning"
+                if not matches:
+                    if artifact.required:
+                        issues.append(_issue("submission", severity, "SUBMISSION_ARTIFACT_MISSING", f"Final artifact was not found in the archive: {artifact.id} ({artifact.member_pattern!r}).", submission.path))
+                    continue
+                if artifact.unique and len(matches) != 1:
+                    issues.append(_issue("submission", severity, "SUBMISSION_ARTIFACT_AMBIGUOUS", f"Final artifact must resolve to exactly one archive member; found {matches!r}: {artifact.id}.", submission.path))
+                    continue
+                source_snapshot = snapshots_by_path.get(artifact.source)
+                if source_snapshot is None:
+                    issues.append(_issue("submission", "error", "SUBMISSION_ARTIFACT_SOURCE_UNAVAILABLE", f"Validated source snapshot is unavailable: {artifact.source}.", artifact.source))
+                    continue
+                for member in matches:
+                    try:
+                        archive_sha256 = _member_sha256(archive, member)
+                    except (OSError, KeyError, RuntimeError, ValueError) as exc:
+                        issues.append(_issue("submission", "error", "SUBMISSION_ARTIFACT_UNREADABLE", f"Final artifact member could not be read: {member}: {exc}.", submission.path, anchor=member))
+                        continue
+                    if archive_sha256 != source_snapshot.sha256:
+                        issues.append(_issue(
+                            "submission",
+                            "error",
+                            "SUBMISSION_ARTIFACT_DRIFTED",
+                            f"Final artifact {artifact.id} does not match the validated source {artifact.source}: archive={archive_sha256}, source={source_snapshot.sha256}.",
+                            submission.path,
+                            anchor=member,
+                        ))
+                    else:
+                        resolved_artifacts.append(ResolvedArtifact(
+                            id=artifact.id,
+                            source=artifact.source,
+                            member=member,
+                            source_sha256=source_snapshot.sha256,
+                            archive_sha256=archive_sha256,
+                        ))
     except (OSError, zipfile.BadZipFile) as exc:
         issues.append(_issue("submission", "error", "SUBMISSION_NOT_ZIP", f"Submission archive is not a readable ZIP: {exc}.", submission.path))
-    return tuple(issues)
+    return tuple(issues), tuple(resolved_artifacts)
+
+
+def validate_submission(manifest: ProjectManifest, root: Path, snapshots: tuple[SourceSnapshot, ...]) -> tuple[Issue, ...]:
+    """Backward-compatible submission validation entry point."""
+
+    issues, _resolved_artifacts = inspect_submission(manifest, root, snapshots)
+    return issues

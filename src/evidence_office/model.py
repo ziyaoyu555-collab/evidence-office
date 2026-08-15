@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 VALID_STATUSES = frozenset({"verified", "unverified", "assumption"})
-SCHEMA_VERSION = "0.9"
+SCHEMA_VERSION = "0.10"
 
 
 def anchor_sort_key(anchor: str) -> tuple[tuple[int, int | str], ...]:
@@ -237,6 +237,34 @@ class RuntimeCheck:
 
 
 @dataclass(frozen=True)
+class FinalArtifactSpec:
+    """Map a validated workspace artifact to its member in the final archive."""
+
+    id: str
+    source: str
+    member_pattern: str
+    required: bool = True
+    unique: bool = True
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any]) -> FinalArtifactSpec:
+        _reject_unknown(raw, {"id", "source", "member_pattern", "required", "unique"}, "final artifact")
+        required = raw.get("required", True)
+        unique = raw.get("unique", True)
+        if not isinstance(required, bool):
+            raise ValueError("Final artifact required must be boolean.")
+        if not isinstance(unique, bool):
+            raise ValueError("Final artifact unique must be boolean.")
+        return cls(
+            id=_text(raw.get("id")),
+            source=_path_text(raw.get("source")),
+            member_pattern=_text(raw.get("member_pattern")),
+            required=required,
+            unique=unique,
+        )
+
+
+@dataclass(frozen=True)
 class SubmissionSpec:
     """Optional identity and structure checks for the actual submitted archive."""
 
@@ -244,21 +272,24 @@ class SubmissionSpec:
     sha256: str | None = None
     required_members: tuple[str, ...] = ()
     single_root: bool = False
+    artifacts: tuple[FinalArtifactSpec, ...] = ()
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> SubmissionSpec:
-        _reject_unknown(raw, {"path", "sha256", "required_members", "single_root"}, "submission")
+        _reject_unknown(raw, {"path", "sha256", "required_members", "single_root", "artifacts"}, "submission")
         members = raw.get("required_members", [])
         if not isinstance(members, list) or not all(isinstance(value, str) for value in members):
             raise ValueError("Submission required_members must be an array of strings.")
         single_root = raw.get("single_root", False)
         if not isinstance(single_root, bool):
             raise ValueError("Submission single_root must be boolean.")
+        artifacts = _mapping_items(raw.get("artifacts"), "submission.artifacts")
         return cls(
             path=_path_text(raw.get("path")),
             sha256=_optional_text(raw.get("sha256")),
             required_members=tuple(_path_text(value) for value in members),
             single_root=single_root,
+            artifacts=tuple(FinalArtifactSpec.from_mapping(item) for item in artifacts),
         )
 
 
@@ -385,6 +416,18 @@ class ProjectManifest:
                 **({"sha256": self.submission.sha256} if self.submission.sha256 else {}),
                 **({"required_members": list(self.submission.required_members)} if self.submission.required_members else {}),
                 **({"single_root": True} if self.submission.single_root else {}),
+                **({
+                    "artifacts": [
+                        {
+                            "id": artifact.id,
+                            "source": artifact.source,
+                            "member_pattern": artifact.member_pattern,
+                            **({"required": False} if not artifact.required else {}),
+                            **({"unique": False} if not artifact.unique else {}),
+                        }
+                        for artifact in self.submission.artifacts
+                    ]
+                } if self.submission.artifacts else {}),
             }
         return mapping
 
@@ -415,6 +458,7 @@ class ValidationReport:
     issues: tuple[Issue, ...]
     sources: tuple[SourceSnapshot, ...]
     claims: tuple[Claim, ...]
+    delivery_artifacts: tuple["ResolvedArtifact", ...] = field(default_factory=tuple, kw_only=True)
 
     @property
     def status(self) -> str:
@@ -451,3 +495,14 @@ class AuditReport(ValidationReport):
         """Keep the audit-specific name without duplicating stored state."""
 
         return self.sources
+
+
+@dataclass(frozen=True)
+class ResolvedArtifact:
+    """The exact final-archive member that was checked against a source artifact."""
+
+    id: str
+    source: str
+    member: str
+    source_sha256: str
+    archive_sha256: str

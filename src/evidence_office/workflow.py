@@ -17,7 +17,8 @@ _WORKFLOW_README = """# Evidence Office review workflow
 4. Run `evidence-office validate manifest.json` while editing.
 5. Run `evidence-office build manifest.json --out dist/` to create the review packet.
 6. Run `evidence-office audit manifest.json --package dist/` before handing off a package.
-7. Use `--strict` in CI when warnings must block delivery.
+7. When `submission.artifacts` is configured, confirm the report's final-artifact mapping; it proves that the actual archive contains the exact report/program/result files that were validated.
+8. Use `--strict` in CI when warnings must block delivery.
 
 The generated packet is deterministic except for its report timestamp. It is a
 validation aid, not a substitute for engineering or scientific review.

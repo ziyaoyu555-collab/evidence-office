@@ -12,7 +12,7 @@ from .model import (
     ProjectManifest,
     ValidationReport,
 )
-from .checks import run_review_checks, validate_submission
+from .checks import inspect_submission, run_review_checks
 from .source_index import index_manifest_sources
 from .storage import read_json
 
@@ -125,6 +125,13 @@ def validate_manifest(manifest: ProjectManifest, root: Path) -> ValidationReport
             elif ref.anchor and ref.anchor not in snapshot.anchors:
                 _add_claim_issue(issues, "error", "EVIDENCE_ANCHOR_NOT_FOUND", f"Evidence anchor was not found in {ref.path}: {ref.anchor}", claim, path=ref.path, anchor=ref.anchor)
 
-    issues.extend(validate_submission(manifest, root, snapshots))
+    submission_issues, delivery_artifacts = inspect_submission(manifest, root, snapshots)
+    issues.extend(submission_issues)
     issues.extend(run_review_checks(manifest, root))
-    return ValidationReport(manifest.project, tuple(issues), snapshots, manifest.claims)
+    return ValidationReport(
+        manifest.project,
+        tuple(issues),
+        snapshots,
+        manifest.claims,
+        delivery_artifacts=delivery_artifacts,
+    )

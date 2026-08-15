@@ -21,8 +21,8 @@ from .storage import read_json
 from .validator import validate_manifest
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_SUPPORTED_SOURCE_INDEX_SCHEMAS = frozenset({"0.3", "0.6", "0.7", "0.8", SCHEMA_VERSION})
-_PACKAGE_INDEX_SCHEMAS = frozenset({"0.7", "0.8", SCHEMA_VERSION})
+_SUPPORTED_SOURCE_INDEX_SCHEMAS = frozenset({"0.3", "0.6", "0.7", "0.8", "0.9", SCHEMA_VERSION})
+_PACKAGE_INDEX_SCHEMAS = frozenset({"0.7", "0.8", "0.9", SCHEMA_VERSION})
 
 
 def _baseline_error(path: Path, message: str) -> Issue:

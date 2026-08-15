@@ -277,6 +277,46 @@ archive fingerprint and structure. The archive itself must be listed in
 validation, so a review workspace should contain the unpacked source files as
 declared sources as well.
 
+### Final artifact closure gate
+
+The final ZIP is not just a container checksum. If a report, calculation
+program, notebook, result table, or other deliverable can be copied separately
+from the workspace into the final archive, map it explicitly under
+`submission.artifacts`:
+
+```json
+{
+  "submission": {
+    "path": "submission.zip",
+    "artifacts": [
+      {
+        "id": "calculation",
+        "source": "src/calculation.ipynb",
+        "member_pattern": "^23231114_喻梓尧_设计成果/.+计算程序.*\\.ipynb$"
+      },
+      {
+        "id": "report",
+        "source": "report/模块二设计报告.docx",
+        "member_pattern": "^23231114_喻梓尧_设计成果/.+模块二设计报告.*\\.docx$"
+      }
+    ]
+  }
+}
+```
+
+For every mapping, `validate` and `build` locate matching archive members,
+reject missing or ambiguous matches, and compare the member SHA-256 with the
+source file that was used by the content and consistency checks. A stale
+Notebook left in the final ZIP therefore fails with
+`SUBMISSION_ARTIFACT_DRIFTED`, even when the unpacked workspace has already
+been corrected. Successful reports list the exact final archive member under
+`delivery.final_artifacts` so the handoff has a traceable closure record.
+
+This gate verifies that the final archive contains the exact artifacts that
+were checked. It does not turn static parsing into execution: a Python,
+Notebook, MATLAB, Simulink, SolidWorks, PowerPoint, WPS, or Windows runtime
+still needs a separately declared and actually performed runtime check.
+
 ## Safety and honest limits
 
 Evidence Office validates the evidence links that are declared in the manifest. It does not prove that a simulation is scientifically correct, that an experiment was performed correctly, or that an engineering conclusion is safe. A green report means that this version's deterministic checks passed.

@@ -119,6 +119,110 @@ class ReviewCheckTests(unittest.TestCase):
             report = validate_manifest(manifest, root)
             self.assertIn("SUBMISSION_UNSAFE_MEMBER", {issue.code for issue in report.errors})
 
+    def test_final_artifacts_are_located_and_bound_to_validated_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "code.py").write_text("mass_kg = 18000\n", encoding="utf-8")
+            (root / "report.md").write_text("Full mass: 18000 kg\n", encoding="utf-8")
+            archive_path = root / "submission.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("final/code.py", (root / "code.py").read_bytes())
+                archive.writestr("final/report.md", (root / "report.md").read_bytes())
+            manifest = self._manifest(root, {
+                "project": "final artifact locator",
+                "description": "archive must contain the exact validated artifacts",
+                "sources": [{"path": name} for name in ("submission.zip", "code.py", "report.md")],
+                "claims": [],
+                "submission": {
+                    "path": "submission.zip",
+                    "artifacts": [
+                        {"id": "calculation", "source": "code.py", "member_pattern": r"^final/code\.py$"},
+                        {"id": "report", "source": "report.md", "member_pattern": r"^final/report\.md$"},
+                    ],
+                },
+            })
+
+            report = validate_manifest(manifest, root)
+
+            self.assertEqual(report.status, "passed_with_warnings")
+            self.assertNotIn("SUBMISSION_ARTIFACT_MISSING", {issue.code for issue in report.errors})
+            self.assertEqual(
+                [(artifact.id, artifact.member, artifact.source) for artifact in report.delivery_artifacts],
+                [
+                    ("calculation", "final/code.py", "code.py"),
+                    ("report", "final/report.md", "report.md"),
+                ],
+            )
+            from evidence_office.report import report_to_dict
+
+            payload = report_to_dict(report)
+            self.assertEqual(
+                [item["member"] for item in payload["delivery"]["final_artifacts"]],
+                ["final/code.py", "final/report.md"],
+            )
+
+    def test_final_archive_with_a_stale_notebook_is_blocked_even_when_workspace_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "code.py").write_text("mass_kg = 18000\n", encoding="utf-8")
+            (root / "report.md").write_text("Full mass: 18000 kg\n", encoding="utf-8")
+            archive_path = root / "submission.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("final/code.py", "mass_kg = 1580\n")
+                archive.writestr("final/report.md", (root / "report.md").read_bytes())
+            manifest = self._manifest(root, {
+                "project": "stale final artifact regression",
+                "description": "the workspace was fixed but the final package was not",
+                "sources": [{"path": name} for name in ("submission.zip", "code.py", "report.md")],
+                "claims": [],
+                "checks": {"consistency": [{
+                    "id": "full-mass",
+                    "expected": 18000,
+                    "values": [
+                        {"path": "code.py", "pattern": r"mass_kg\s*=\s*(\d+)"},
+                        {"path": "report.md", "pattern": r"Full mass:\s*(\d+)"},
+                    ],
+                }]},
+                "submission": {
+                    "path": "submission.zip",
+                    "artifacts": [
+                        {"id": "calculation", "source": "code.py", "member_pattern": r"^final/code\.py$"},
+                        {"id": "report", "source": "report.md", "member_pattern": r"^final/report\.md$"},
+                    ],
+                },
+            })
+
+            report = validate_manifest(manifest, root)
+
+            self.assertIn("SUBMISSION_ARTIFACT_DRIFTED", {issue.code for issue in report.errors})
+            self.assertEqual(report.status, "failed")
+
+    def test_ambiguous_final_artifact_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "report.md").write_text("final report\n", encoding="utf-8")
+            with zipfile.ZipFile(root / "submission.zip", "w") as archive:
+                archive.writestr("final/report.md", "final report\n")
+                archive.writestr("backup/report.md", "old report\n")
+            manifest = self._manifest(root, {
+                "project": "ambiguous final artifact",
+                "description": "two report candidates must not be guessed",
+                "sources": [{"path": name} for name in ("submission.zip", "report.md")],
+                "claims": [],
+                "submission": {
+                    "path": "submission.zip",
+                    "artifacts": [{
+                        "id": "report",
+                        "source": "report.md",
+                        "member_pattern": r"report\.md$",
+                    }],
+                },
+            })
+
+            report = validate_manifest(manifest, root)
+
+            self.assertIn("SUBMISSION_ARTIFACT_AMBIGUOUS", {issue.code for issue in report.errors})
+
 
 if __name__ == "__main__":
     unittest.main()

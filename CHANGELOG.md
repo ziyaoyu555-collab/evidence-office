@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.0 — 2026-08-15
+
+- add final-artifact mappings under `submission.artifacts` so the actual delivery archive is located and checked as a separate acceptance boundary;
+- compare each located archive member byte-for-byte with the source artifact used by the report and consistency checks, blocking stale packaged code or reports;
+- expose resolved final-artifact members in JSON, text, Markdown, and HTML reports;
+- preserve v0.9 source/package audit compatibility and add regression coverage for stale final packages and ambiguous artifact locations.
+
 ## 0.9.0 — 2026-08-14
 
 - add manifest-configured submission archive identity and structure checks, including SHA-256, ZIP CRC integrity, required members, and optional single-root validation;
