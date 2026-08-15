@@ -1,24 +1,24 @@
-import csv
-import json
 import contextlib
+import csv
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from evidence_office import __version__
 from evidence_office.cli import main
 
 
 class CliBehaviourTests(unittest.TestCase):
     def test_version_flag_is_available(self) -> None:
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
-            with self.assertRaises(SystemExit) as raised:
-                main(["--version"])
+        with contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit) as raised:
+            main(["--version"])
 
         self.assertEqual(raised.exception.code, 0)
-        self.assertIn("evidence-office 0.7.0", stdout.getvalue())
+        self.assertEqual(stdout.getvalue(), f"evidence-office {__version__}\n")
 
     def test_build_writes_machine_and_human_reports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -73,6 +73,25 @@ class CliBehaviourTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             anchors = json.loads(stdout.getvalue())["anchors"]
             self.assertLess(anchors.index("line:2"), anchors.index("line:10"))
+
+    def test_inspect_filters_and_limits_large_anchor_inventories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "lines.txt").write_text("line\n" * 12, encoding="utf-8")
+            stdout = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout):
+                exit_code = main([
+                    "inspect", "lines.txt", "--root", str(root),
+                    "--anchor-prefix", "line:", "--limit", "3",
+                ])
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["anchor_count"], 14)
+            self.assertEqual(payload["matched_anchor_count"], 12)
+            self.assertEqual(payload["anchors"], ["line:1", "line:2", "line:3"])
+            self.assertTrue(payload["anchors_truncated"])
 
     def test_inspect_error_neutralizes_terminal_control_characters(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -210,9 +229,11 @@ class CliBehaviourTests(unittest.TestCase):
             manifest.write_text('{"project":"too large"}', encoding="utf-8")
             stderr = io.StringIO()
 
-            with mock.patch("evidence_office.storage._MAX_JSON_BYTES", 8):
-                with contextlib.redirect_stderr(stderr):
-                    exit_code = main(["validate", str(manifest)])
+            with (
+                mock.patch("evidence_office.storage._MAX_JSON_BYTES", 8),
+                contextlib.redirect_stderr(stderr),
+            ):
+                exit_code = main(["validate", str(manifest)])
 
             self.assertEqual(exit_code, 2)
             self.assertIn("JSON document exceeds", stderr.getvalue())
@@ -322,9 +343,11 @@ class CliBehaviourTests(unittest.TestCase):
             manifest = Path(directory) / "deep.json"
             manifest.write_text("{}", encoding="utf-8")
             stderr = io.StringIO()
-            with mock.patch("evidence_office.storage.json.loads", side_effect=RecursionError("too deep")):
-                with contextlib.redirect_stderr(stderr):
-                    exit_code = main(["validate", str(manifest)])
+            with (
+                mock.patch("evidence_office.storage.json.loads", side_effect=RecursionError("too deep")),
+                contextlib.redirect_stderr(stderr),
+            ):
+                exit_code = main(["validate", str(manifest)])
 
             self.assertEqual(exit_code, 2)
             self.assertIn("too deeply nested", stderr.getvalue())
@@ -365,11 +388,13 @@ class CliBehaviourTests(unittest.TestCase):
             }), encoding="utf-8")
             stderr = io.StringIO()
 
-            with mock.patch("pathlib.Path.write_text", side_effect=OSError("disk unavailable")):
-                with contextlib.redirect_stderr(stderr):
-                    exit_code = main([
-                        "validate", str(manifest), "--format", "json", "--out", str(root / "report.json"),
-                    ])
+            with (
+                mock.patch("pathlib.Path.write_text", side_effect=OSError("disk unavailable")),
+                contextlib.redirect_stderr(stderr),
+            ):
+                exit_code = main([
+                    "validate", str(manifest), "--format", "json", "--out", str(root / "report.json"),
+                ])
 
             self.assertEqual(exit_code, 2)
             self.assertIn("disk unavailable", stderr.getvalue())

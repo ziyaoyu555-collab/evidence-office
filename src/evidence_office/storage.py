@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
 import tempfile
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Iterable, Mapping
-
+from typing import Any
 
 _MAX_JSON_BYTES = 64 * 1024 * 1024
 
@@ -137,10 +138,8 @@ def write_texts_atomic(directory: Path, contents: Mapping[str, str]) -> dict[str
         raise
     finally:
         for temporary in (*staged.values(), *backups.values()):
-            try:
+            with contextlib.suppress(OSError):
                 temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
     return targets
 
 

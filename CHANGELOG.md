@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.10.0 — 2026-08-15
+
+- add final-artifact mappings under `submission.artifacts` so the actual delivery archive is located and checked as a separate acceptance boundary;
+- compare each located archive member byte-for-byte with the source artifact used by the report and consistency checks, blocking stale packaged code or reports;
+- expose resolved final-artifact members in JSON, text, Markdown, and HTML reports;
+- preserve v0.9 source/package audit compatibility and add regression coverage for stale final packages and ambiguous artifact locations.
+
+## 0.9.0 — 2026-08-14
+
+- add manifest-configured submission archive identity and structure checks, including SHA-256, ZIP CRC integrity, required members, and optional single-root validation;
+- add generic content gates for required or forbidden regex patterns across declared reports, code, notebooks, and other text-readable evidence;
+- add generic cross-artifact consistency probes that extract one value per source and compare it with an optional project baseline and tolerance;
+- index Python and Jupyter Notebook sources as first-class evidence instead of treating them as file-only attachments;
+- add explicit runtime boundary checks so static inspection cannot be reported as dynamic execution, with configurable warning or blocking severity;
+- preserve v0.8 source/package audit compatibility and the existing manifest workflow when no new checks are configured;
+- add regression coverage for archive identity, content failures, Notebook indexing, cross-file mismatch, and unverified runtime boundaries.
+
+## 0.8.0 — 2026-08-09
+
+- add bounded, read-only SLX package indexing with system, block SID, block type, and percent-encoded block-path anchors;
+- expose model release, UUID, system count, block count, and block-type inventory while marking every SLX source `static-only` and `runtime_validated: false`;
+- add repeatable `inspect --anchor-prefix` filtering, `--limit`, total/matched counts, and explicit truncation status for large source inventories;
+- re-hash every source after anchor extraction so same-size edits with restored timestamps cannot be accepted as one immutable snapshot;
+- cap each evidence anchor at 4,096 characters across source indexers to prevent one hostile field, key, sheet, or block name from amplifying report size;
+- show analysis mode in text, Markdown, and HTML source inventories;
+- preserve full v0.7 checksum-package audit compatibility after advancing the current package schema to 0.8;
+- add a pinned Ruff quality gate so every pull request rejects lint and static-analysis regressions;
+- expand the regression suite from 90 to 98 tests and add a deterministic 1,000-case malformed-SLX stress run plus real R2021a model verification.
+
 ## 0.7.0 — 2026-08-09
 
 - reject ambiguous or nonstandard JSON, including duplicate keys, NaN/Infinity, overflowing exponents, invalid Unicode, and oversized documents;

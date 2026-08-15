@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evidence-office"
-version = "0.7.0"
-description = "Evidence-linked validation and reporting for engineering Office deliverables."
+version = "0.10.0"
+description = "Evidence-linked validation for engineering Office and model deliverables."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "ziyaoyu555-collab" }]
-keywords = ["provenance", "evidence", "office", "pptx", "engineering", "audit"]
+keywords = ["provenance", "evidence", "office", "pptx", "simulink", "slx", "engineering", "audit"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: MIT License",
@@ -27,3 +27,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "SIM", "TRY004"]

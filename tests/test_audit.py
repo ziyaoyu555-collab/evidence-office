@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -6,7 +7,7 @@ from unittest import mock
 
 from evidence_office.audit import audit_package
 from evidence_office.model import SCHEMA_VERSION
-from evidence_office.report import render_html
+from evidence_office.report import PACKAGE_CONTENT_FILES, render_html
 from evidence_office.validator import load_manifest
 from evidence_office.workflow import create_workspace, intake_sources
 
@@ -76,6 +77,26 @@ class AuditBehaviourTests(unittest.TestCase):
             source_index["schema_version"] = "0.6"
             source_index_path.write_text(json.dumps(source_index), encoding="utf-8")
             (dist / "package-index.json").unlink()
+
+            result = audit_package(load_manifest(manifest_path), workspace, dist)
+
+            self.assertEqual(result.status, "passed")
+
+    def test_v07_package_with_checksum_index_remains_auditable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, manifest_path, dist = self._built_workspace(directory)
+            source_index_path = dist / "source-index.json"
+            source_index = json.loads(source_index_path.read_text(encoding="utf-8"))
+            source_index["schema_version"] = "0.7"
+            source_index_path.write_text(json.dumps(source_index), encoding="utf-8")
+            package_index_path = dist / "package-index.json"
+            package_index = json.loads(package_index_path.read_text(encoding="utf-8"))
+            package_index["schema_version"] = "0.7"
+            package_index["files"] = {
+                name: hashlib.sha256((dist / name).read_bytes()).hexdigest()
+                for name in PACKAGE_CONTENT_FILES
+            }
+            package_index_path.write_text(json.dumps(package_index), encoding="utf-8")
 
             result = audit_package(load_manifest(manifest_path), workspace, dist)
 

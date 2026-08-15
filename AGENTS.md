@@ -10,6 +10,6 @@ These rules are release gates, not suggestions.
 6. New parsers must fail closed: malformed input produces a readable validation result or a concise CLI error, never fabricated evidence.
 7. A release is not complete until the full standard-library test suite, CLI smoke tests, and example build pass.
 8. Do not claim PowerPoint, MATLAB, Simulink, SolidWorks, WPS, or Windows runtime acceptance unless that runtime was actually tested.
+9. A final delivery archive is a separate acceptance boundary: locate every configured report/program/result artifact inside the actual archive, require an unambiguous match, compare its bytes with the validated source artifact, and block delivery on drift or ambiguity.
 
 The project uses deep modules with small public interfaces. Prefer adding behaviour behind `validate_manifest`, `index_file`, and the CLI over exposing parser internals.
-

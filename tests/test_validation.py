@@ -1,5 +1,7 @@
 import csv
 import hashlib
+import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -7,9 +9,60 @@ from pathlib import Path
 from unittest import mock
 
 from evidence_office.model import ProjectManifest
-from evidence_office.report import render_html, render_markdown, render_text, report_to_dict
+from evidence_office.report import (
+    render_html,
+    render_markdown,
+    render_text,
+    report_to_dict,
+)
 from evidence_office.source_index import index_file
 from evidence_office.validator import validate_manifest
+
+
+def _write_minimal_slx(
+    path: Path,
+    *,
+    include_nested_relationship: bool = True,
+    nested_sid: str = "11",
+    nested_name: str = "Target",
+) -> None:
+    """Write a small OPC-style model package with one nested subsystem."""
+
+    relationships = (
+        "<Relationship Id='system_7' Target='system_7.xml' Type='system'/>"
+        if include_nested_relationship else ""
+    )
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "simulink/blockdiagram.xml",
+            "<ModelInformation><Model><P Name='ModelUUID'>model-123</P>"
+            "<System Ref='system_root'/></Model></ModelInformation>",
+        )
+        archive.writestr(
+            "simulink/_rels/blockdiagram.xml.rels",
+            "<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'>"
+            "<Relationship Id='system_root' Target='systems/system_root.xml' Type='system'/>"
+            "</Relationships>",
+        )
+        archive.writestr(
+            "simulink/systems/system_root.xml",
+            "<System><Block BlockType='Gain' Name='Gain' SID='10'/>"
+            "<Block BlockType='SubSystem' Name='Controller' SID='7'>"
+            "<System Ref='system_7'/></Block></System>",
+        )
+        archive.writestr(
+            "simulink/systems/_rels/system_root.xml.rels",
+            "<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'>"
+            f"{relationships}</Relationships>",
+        )
+        archive.writestr(
+            "simulink/systems/system_7.xml",
+            f"<System><Block BlockType='Constant' Name='{nested_name}' SID='{nested_sid}'/></System>",
+        )
+        archive.writestr(
+            "metadata/mwcorePropertiesReleaseInfo.xml",
+            "<MathWorks_version_info><release>R2021a</release></MathWorks_version_info>",
+        )
 
 
 class ValidationBehaviourTests(unittest.TestCase):
@@ -511,6 +564,120 @@ class ValidationBehaviourTests(unittest.TestCase):
 
             self.assertEqual(report.status, "failed")
             self.assertIn("SOURCE_CHANGED_DURING_INDEX", {issue.code for issue in report.errors})
+
+    def test_same_size_source_change_with_restored_mtime_is_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.txt"
+            source.write_bytes(b"first\n")
+            original = source.stat()
+
+            def stealth_mutation(path: Path) -> tuple[set[str], dict[str, object]]:
+                path.write_bytes(b"other\n")
+                os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+                return {"file", f"file:{path.name}", "line:1"}, {"lines": 1}
+
+            with mock.patch.dict(
+                "evidence_office.source_index._SOURCE_INDEXERS",
+                {".txt": stealth_mutation},
+            ):
+                snapshot = index_file(root, "source.txt")
+
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+            self.assertEqual(snapshot.metadata.get("integrity"), "changed")
+
+    def test_slx_block_anchor_can_verify_static_model_structure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_minimal_slx(root / "controller.slx")
+            manifest = ProjectManifest.from_mapping({
+                "project": "Static Simulink review",
+                "sources": [{"path": "controller.slx"}],
+                "claims": [{
+                    "id": "C-001",
+                    "statement": "The controller contains a target constant block.",
+                    "status": "verified",
+                    "sources": [{"path": "controller.slx", "anchor": "block:11"}],
+                }],
+            })
+
+            report = validate_manifest(manifest, root)
+
+            self.assertEqual(report.status, "passed")
+            snapshot = report.sources[0]
+            self.assertIn("block:11", snapshot.anchors)
+            self.assertIn("block-path:Controller/Target", snapshot.anchors)
+            self.assertEqual(snapshot.metadata["analysis"], "static-only")
+            self.assertEqual(snapshot.metadata["systems"], 2)
+            self.assertEqual(snapshot.metadata["blocks"], 3)
+            self.assertEqual(snapshot.metadata["release"], "R2021a")
+            self.assertIn("static-only", render_text(report))
+            self.assertIn("static-only", render_markdown(report))
+            self.assertIn("static-only", render_html(report))
+
+    def test_slx_missing_nested_system_relationship_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_minimal_slx(root / "broken.slx", include_nested_relationship=False)
+            manifest = ProjectManifest.from_mapping({
+                "project": "Broken static model",
+                "sources": [{"path": "broken.slx"}],
+                "claims": [],
+            })
+
+            report = validate_manifest(manifest, root)
+
+            self.assertEqual(report.status, "failed")
+            self.assertIn("SOURCE_PARSE_UNAVAILABLE", {issue.code for issue in report.errors})
+
+    def test_slx_duplicate_block_sid_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_minimal_slx(root / "ambiguous.slx", nested_sid="10")
+            manifest = ProjectManifest.from_mapping({
+                "project": "Ambiguous static model",
+                "sources": [{"path": "ambiguous.slx"}],
+                "claims": [],
+            })
+
+            report = validate_manifest(manifest, root)
+
+            self.assertEqual(report.status, "failed")
+            self.assertIn("SOURCE_PARSE_UNAVAILABLE", {issue.code for issue in report.errors})
+
+    def test_slx_oversized_block_anchor_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_minimal_slx(root / "oversized.slx", nested_name="x" * 5000)
+            manifest = ProjectManifest.from_mapping({
+                "project": "Bounded static model",
+                "sources": [{"path": "oversized.slx"}],
+                "claims": [],
+            })
+
+            report = validate_manifest(manifest, root)
+
+            self.assertEqual(report.status, "failed")
+            self.assertIn("SOURCE_PARSE_UNAVAILABLE", {issue.code for issue in report.errors})
+
+    def test_json_oversized_anchor_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "oversized.json").write_text(
+                json.dumps({"x" * 5000: 1}),
+                encoding="utf-8",
+            )
+            manifest = ProjectManifest.from_mapping({
+                "project": "Bounded JSON anchors",
+                "sources": [{"path": "oversized.json"}],
+                "claims": [],
+            })
+
+            report = validate_manifest(manifest, root)
+
+            self.assertEqual(report.status, "failed")
+            self.assertIn("SOURCE_PARSE_UNAVAILABLE", {issue.code for issue in report.errors})
 
     def test_equivalent_manual_paths_resolve_to_one_declared_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

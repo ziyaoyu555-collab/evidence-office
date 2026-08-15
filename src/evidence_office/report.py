@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
-import html
 import hashlib
+import html
 import re
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .model import AuditReport, ProjectManifest, SCHEMA_VERSION, SourceSnapshot, ValidationReport, anchor_sort_key
+from .model import (
+    SCHEMA_VERSION,
+    AuditReport,
+    ProjectManifest,
+    SourceSnapshot,
+    ValidationReport,
+    anchor_sort_key,
+)
 from .storage import json_text, write_texts_atomic
-
 
 Report = ValidationReport | AuditReport
 PACKAGE_CONTENT_FILES = (
@@ -44,6 +51,12 @@ def _source_to_dict(source: SourceSnapshot, include_details: bool = True) -> dic
     if include_details:
         data.update(anchors=sorted(source.anchors, key=anchor_sort_key), metadata=dict(source.metadata))
     return data
+
+
+def _source_analysis(source: SourceSnapshot | Mapping[str, Any]) -> str:
+    metadata = source.metadata if isinstance(source, SourceSnapshot) else source.get("metadata", {})
+    mode = metadata.get("analysis") if isinstance(metadata, Mapping) else None
+    return mode if isinstance(mode, str) and mode else "indexed"
 
 
 def _md_text(value: object) -> str:
@@ -97,6 +110,10 @@ def report_to_dict(report: Report) -> dict[str, Any]:
         "issues": [asdict(issue) for issue in report.issues],
         "sources": [_source_to_dict(source) for source in report.sources],
     }
+    if report.delivery_artifacts:
+        payload["delivery"] = {
+            "final_artifacts": [asdict(artifact) for artifact in report.delivery_artifacts],
+        }
     if isinstance(report, AuditReport):
         payload["audit"] = {
             "baseline_sources": [_source_to_dict(source, include_details=False) for source in report.baseline_sources],
@@ -132,6 +149,20 @@ def render_text(report: Report) -> str:
             lines.append(f"- [{issue.severity}] {issue.code}:{location} {safe_line(issue.message)}")
     else:
         lines.append("No issues.")
+    if report.delivery_artifacts:
+        lines.append("Final artifacts:")
+        for artifact in report.delivery_artifacts:
+            lines.append(
+                f"- {safe_line(artifact.id)}: {safe_line(artifact.member)} "
+                f"matches {safe_line(artifact.source)} [{safe_line(artifact.archive_sha256)}]"
+            )
+    if report.sources:
+        lines.append("Sources:")
+        for source in report.sources:
+            lines.append(
+                f"- {safe_line(source.path)} [{safe_line(source.kind)}; "
+                f"{safe_line(_source_analysis(source))}; {len(source.anchors)} anchors]"
+            )
     if report.claims:
         lines.append("Claims:")
         for claim in report.claims:
@@ -190,14 +221,21 @@ def render_markdown(report: Report) -> str:
             )
     else:
         lines.append("No issues.")
-    lines.extend(["", "## Source fingerprints", "", "| Path | Kind | SHA-256 | Bytes | Anchors |", "| --- | --- | --- | ---: | ---: |"])
+    if report.delivery_artifacts:
+        lines.extend(["", "## Final artifact mapping", "", "| ID | Final archive member | Validated source | SHA-256 |", "| --- | --- | --- | --- |"])
+        for artifact in report.delivery_artifacts:
+            lines.append(
+                f"| {_md_code(artifact.id)} | {_md_code(artifact.member)} | "
+                f"{_md_code(artifact.source)} | {_md_code(artifact.archive_sha256)} |"
+            )
+    lines.extend(["", "## Source fingerprints", "", "| Path | Kind | Analysis | SHA-256 | Bytes | Anchors |", "| --- | --- | --- | --- | ---: | ---: |"])
     for source in data["sources"]:
         lines.append(
-            f"| {_md_code(source['path'])} | {_md_code(source['kind'])} | {_md_code(source['sha256'])} | "
+            f"| {_md_code(source['path'])} | {_md_code(source['kind'])} | {_md_code(_source_analysis(source))} | {_md_code(source['sha256'])} | "
             f"{source['size_bytes']} | {len(source['anchors'])} |"
         )
     if not data["sources"]:
-        lines.append("| — | — | — | 0 | 0 |")
+        lines.append("| — | — | — | — | 0 | 0 |")
     lines.extend(["", "> A passed report means only that this version's deterministic checks passed; it is not a substitute for domain review.", ""])
     return "\n".join(lines)
 
@@ -225,11 +263,21 @@ def render_html(report: Report) -> str:
         "<tr>"
         f"<td><code>{_html_text(source['path'])}</code></td>"
         f"<td>{_html_text(source['kind'])}</td>"
+        f"<td>{_html_text(_source_analysis(source))}</td>"
         f"<td>{source['size_bytes']}</td>"
         f"<td><code>{_html_text(source['sha256'][:16])}…</code></td>"
         f"<td>{len(source['anchors'])}</td>"
         "</tr>"
         for source in data["sources"]
+    )
+    artifact_rows = "".join(
+        "<tr>"
+        f"<td><code>{_html_text(artifact.id)}</code></td>"
+        f"<td><code>{_html_text(artifact.member)}</code></td>"
+        f"<td><code>{_html_text(artifact.source)}</code></td>"
+        f"<td><code>{_html_text(artifact.archive_sha256[:16])}…</code></td>"
+        "</tr>"
+        for artifact in report.delivery_artifacts
     )
     empty_evidence = '<span class="muted">none</span>'
     claim_rows = "".join(
@@ -263,7 +311,8 @@ table {{ width:100%; border-collapse:collapse; overflow:hidden; background:var(-
 <section class="cards"><div class="card"><b>{report.claims_checked}</b><span>claims checked</span></div><div class="card"><b>{len(report.sources)}</b><span>sources indexed</span></div>{baseline_card}<div class="card"><b>{len(report.errors)}</b><span>blocking errors</span></div><div class="card"><b>{len(report.warnings)}</b><span>review warnings</span></div></section>
 <h2>Claim ledger</h2><table><thead><tr><th>ID</th><th>Status</th><th>Statement</th><th>Evidence</th><th>Note</th></tr></thead><tbody>{claim_rows or '<tr><td colspan="5" class="muted">No claims declared.</td></tr>'}</tbody></table>
 <h2>Issues</h2>{issues_block}
-<h2>Source fingerprints</h2><table><thead><tr><th>Path</th><th>Kind</th><th>Bytes</th><th>SHA-256</th><th>Anchors</th></tr></thead><tbody>{source_rows or '<tr><td colspan="5" class="muted">No existing declared sources.</td></tr>'}</tbody></table>
+{('<h2>Final artifact mapping</h2><table><thead><tr><th>ID</th><th>Archive member</th><th>Validated source</th><th>SHA-256</th></tr></thead><tbody>' + artifact_rows + '</tbody></table>') if artifact_rows else ''}
+<h2>Source fingerprints</h2><table><thead><tr><th>Path</th><th>Kind</th><th>Analysis</th><th>Bytes</th><th>SHA-256</th><th>Anchors</th></tr></thead><tbody>{source_rows or '<tr><td colspan="6" class="muted">No existing declared sources.</td></tr>'}</tbody></table>
 <p class="muted" style="margin-top:28px">Generated by evidence-office {_html_text(__version__)}. A passed report means only that the deterministic checks in this version passed; it is not a substitute for domain review.</p>
 </main></body></html>\n"""
 
